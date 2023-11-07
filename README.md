@@ -1,8 +1,8 @@
 # Nixwrap - Easy Application Sandboxing
 
-![A cute wrap, the mascot of Nixwrap](./wrap.jpg)
+<p align="center"><img src="./wrap.jpg" alt="A cute wrap, the mascot of Nixwrap" style="width:400px;"/></p>
 
-Nixwrap is a command-line utility and NixOS module to make the process of sandboxing applications simple and straightforward. With Nixwrap, you can easily isolate applications from the rest of your system, controlling their access to the filesystem, devices, and network, enhancing your system's security and privacy. `wrap` serves as a frontend to `bwrap` [Bubblewrap](https://github.com/containers/bubblewrap), integrating its functionalities with additional options to enhance the user experience.
+Nixwrap is a command-line utility and NixOS utility function to make the process of sandboxing applications simple and straightforward. With Nixwrap, you can easily isolate applications from the rest of your system, controlling their access to the filesystem, devices, and network, enhancing your system's security and privacy. `wrap` serves as a frontend to `bwrap` [Bubblewrap](https://github.com/containers/bubblewrap), integrating its functionalities with additional options to enhance the user experience.
 
 ## Features
 - Easy-to-use command-line interface.
@@ -18,6 +18,23 @@ Nixwrap is a command-line utility and NixOS module to make the process of sandbo
 ## Usage
 ### Command line utility
 The wrap command allows you to sandbox applications ad-hoc with a simple and intuitive interface. With wrap, you can create a secure environment on the fly for a single instance of an application run, without the need for persistent configurations or changes to the system. This is particularly useful for testing, running untrusted software, or limiting access to system resources.
+
+#### Examples
+
+Run `npm install` with write access to the current working directory and network access.
+```shell
+wrap -n npm install
+```
+
+Run a random python script with Pulse Audio and Pipewire access, but not sharing the current working directory.
+```shell
+wrap -p -a python my-tool.py
+```
+
+Run `qutebrowser` with network access, read access to its config, and write access to its data and cache dir.
+```shell
+wrap -n -r ~/.config/qutebrowser -w ~/.local/share/qutebrowser -w ~/.cache/qutebrowser qutebrowser
+```
 
 #### General syntax:
 `wrap [OPTIONS] -- [bwrap args] [program to wrap with args]`
@@ -58,7 +75,7 @@ Add the Nixwrap flake as an input in your NixOS system flake.
   };
 
   # ...
-
+}
 ```
 #### Wrap a package
 To wrap a package, use the function from `inputs.wrap.lib.wrap`. It takes the following arguments:
@@ -71,6 +88,7 @@ The function returns a new package wrapping the given package.
 ```nix
 (pkgs, inputs, ...):
 {
+    /* wrap node with network access */
     environment.systemPackages = [ 
         (inputs.wrap.packages.wrap {
             package = pkgs.nodejs;
