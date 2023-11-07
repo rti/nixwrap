@@ -9,11 +9,7 @@ Nixwrap is a command-line utility and NixOS utility function to make the process
 - Flexible mounting options for filesystem control.
 - Current working directory shared by default, can be disabled.
 - Options for granting access to Wayland display, DBus, network, audio, and camera.
-- Ability to restrict applications to read-only file access.
-- Environment variable control within the sandbox.
-- Advanced manual unsharing of namespaces for expert users.
-- Option to maintain or prevent sharing of the current working directory.
-- Verbose output mode for debugging.
+- Add wrap'd packages to your NixOS environment 
 
 ## Examples
 
