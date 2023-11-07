@@ -15,11 +15,7 @@ Nixwrap is a command-line utility and NixOS utility function to make the process
 - Option to maintain or prevent sharing of the current working directory.
 - Verbose output mode for debugging.
 
-## Usage
-### Command line utility
-The wrap command allows you to sandbox applications ad-hoc with a simple and intuitive interface. With wrap, you can create a secure environment on the fly for a single instance of an application run, without the need for persistent configurations or changes to the system. This is particularly useful for testing, running untrusted software, or limiting access to system resources.
-
-#### Examples
+## Examples
 
 Run `npm install` with write access to the current working directory and network access.
 ```shell
@@ -35,6 +31,10 @@ Run `qutebrowser` with network access, read access to its config, and write acce
 ```shell
 wrap -n -r ~/.config/qutebrowser -w ~/.local/share/qutebrowser -w ~/.cache/qutebrowser qutebrowser
 ```
+
+## Usage
+### Command line utility
+The wrap command allows you to sandbox applications ad-hoc with a simple and intuitive interface. With wrap, you can create a secure environment on the fly for a single instance of an application run, without the need for persistent configurations or changes to the system. This is particularly useful for testing, running untrusted software, or limiting access to system resources.
 
 #### General syntax:
 `wrap [OPTIONS] -- [bwrap args] [program to wrap with args]`
