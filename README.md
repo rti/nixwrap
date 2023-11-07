@@ -54,9 +54,9 @@ The wrap command allows you to sandbox applications ad-hoc with a simple and int
 
 #### Advanced Options
 ```
- -m Manual unsharing. Does not automatically unshare any namespaces.
- -p Do not share the current working directory.
- -v Verbose output for debugging.
+ -m         Manual unsharing. Does not automatically unshare any namespaces.
+ -p         Do not share the current working directory.
+ -v         Verbose output for debugging.
 ```
 
 ### NixOS Utility
@@ -74,9 +74,10 @@ Add the Nixwrap flake as an input in your NixOS system flake.
     wrap.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  # ...
+  # outputs ...
 }
 ```
+
 #### Wrap a package
 To wrap a package, use the function from `inputs.wrap.lib.wrap`. It takes the following arguments:
 - `package` The package to wrap.
