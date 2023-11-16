@@ -58,7 +58,7 @@ fi
 unshare_all=1
 share_cwd=1
 
-while getopts "r:w:abcdehmnpuv" opt; do
+while getopts "r:w:e:abcdhmnpuv" opt; do
   case "$opt" in
     r)  
       bwrap_opts+=(--ro-bind "$OPTARG" "$OPTARG")
