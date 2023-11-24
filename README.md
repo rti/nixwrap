@@ -23,6 +23,11 @@ Run a random python script with Pulse Audio and Pipewire access, but not sharing
 wrap -p -a python my-tool.py
 ```
 
+Run software you do not trust directly from `nix3-run`, in this case vscodium with network and display access.
+```shell
+wrap -n -d nix run nixpkgs#vscodium
+```
+
 ## Usage
 ### Command line utility
 The wrap command allows you to sandbox applications ad-hoc with a simple and intuitive interface. With wrap, you can create a secure environment on the fly for a single instance of an application run, without the need for persistent configurations or changes to the system. This is particularly useful for testing, running untrusted software, or limiting access to system resources.
