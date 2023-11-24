@@ -161,6 +161,8 @@ bwrap \
   --proc /proc \
   --tmpfs /tmp \
   --ro-bind /nix /nix \
+  --ro-bind /etc/nix /etc/nix \
+  --ro-bind /etc/static/nix /etc/static/nix \
   --bind "$TMPDIR" "$TMPDIR" \
   "${bwrap_opts[@]}" \
   "$@"
