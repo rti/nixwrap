@@ -179,6 +179,7 @@ bwrap \
   --dev /dev \
   --proc /proc \
   --tmpfs /tmp \
+  --ro-bind /bin /bin \
   --ro-bind /nix /nix \
   --ro-bind /etc/nix /etc/nix \
   --ro-bind /etc/static/nix /etc/static/nix \
