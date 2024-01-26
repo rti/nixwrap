@@ -180,6 +180,7 @@ bwrap \
   --proc /proc \
   --tmpfs /tmp \
   --ro-bind /bin /bin \
+  --ro-bind /usr/bin /usr/bin \
   --ro-bind /nix /nix \
   --ro-bind /etc/nix /etc/nix \
   --ro-bind /etc/static/nix /etc/static/nix \
