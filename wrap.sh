@@ -185,5 +185,6 @@ bwrap \
   --ro-bind /etc/nix /etc/nix \
   --ro-bind /etc/static/nix /etc/static/nix \
   --bind "$TMPDIR" "$TMPDIR" \
+  --dir "$HOME" \
   "${bwrap_opts[@]}" \
   "$@"
