@@ -1,7 +1,4 @@
-{
-  pkgs ? import <nixpkgs> { },
-  ...
-}:
+{ pkgs, ... }:
 
 {
   wrap =

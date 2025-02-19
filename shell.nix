@@ -1,6 +1,4 @@
-{
-  pkgs ? import <nixpkgs>,
-}:
+{ pkgs }:
 pkgs.mkShell {
   buildInputs = [
     pkgs.bubblewrap
