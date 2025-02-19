@@ -10,7 +10,7 @@ The goal of Nixwrap is to make sandboxing easy to use for common use cases, redu
 
 ### npm install
 
-You need to run `npm install` on a project, but you cannot not trust all its dependencies.
+> You need to run `npm install` on a project, but you cannot not trust all its dependencies.
 
 To run `npm install` only with write access to the current working directory and network access, simply do:
 ```shell
@@ -19,16 +19,20 @@ wrap -n npm install
 
 ### GUI Application using nix3-run
 
-Run software you do not trust using `nix3-run`, in this case vscodium with network and display access:
+> You need to run a GUI application, but you want limit access to your filesystem.
+
+To run software using `nix3-run`, in this case vscodium with network and display access, without access to your home directory:
 ```shell
-wrap -n -d nix run nixpkgs#vscodium
+wrap -n -d -p nix run nixpkgs#vscodium
 ```
 
 ### Python tool
 
-Run a random python script with Pulse Audio and Pipewire access, but not sharing the current working directory:
+> You need to run a `python` script that has access to your audio hardware.
+
+Run a python script with Pulse Audio and Pipewire access, but not sharing the current working directory:
 ```shell
-wrap -p -a python my-tool.py
+wrap -a -p python my-tool.py
 ```
 
 ## Usage
