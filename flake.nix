@@ -19,6 +19,7 @@
           wrap = pkgs.callPackage ./package.nix { };
           default = wrap;
         };
+        devShells.default = import ./shell.nix { inherit pkgs; };
       }
     );
 }
