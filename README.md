@@ -112,6 +112,38 @@ inputs.wrap.packages.wrap {
 }
 ```
 
+#### Flake devShell with wrapped `nodejs`
+
+This example installs `nodejs` in a devShell, but wraps `node` with Nixwrap, so what it can only access the current working directory and the network.
+
+```nix
+{
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+  inputs.flake-utils.url = "github:numtide/flake-utils";
+  inputs.wrap.url = "github:rti/nixwrap";
+
+  outputs = { nixpkgs, wrap, ... } @inputs:
+    inputs.flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+      {
+
+        devShells.default = pkgs.mkShell {
+          buildInputs = [
+            (wrap.lib.${system}.wrap {
+              package = pkgs.nodejs;
+              executable = "node";
+              wrapArgs = "-n";
+            })
+          ];
+        };
+      }
+    );
+}
+```
+
 ## Supported platforms
 Nixwrap is at the moment tested exclusively on NixOS, even though the concept should work in any distribution that ships a current kernel.
 
