@@ -38,17 +38,16 @@ wrap -a -p python my-tool.py
 ## How to use
 
 By default, Nixwrap will:
-- prevent network access
-- prevent access to user name information
-- prevent dbus socket access
-- prevent access to wayland and X sockets
+- Prevent network access. (Use `-n` to allow.)
+- Prevent access to Wayland and X. (Use `-d` (desktop) to allow.)
+- Prevent camera access. (Use `-c` to allow.)
+- Prevent audio access. (Use `-a` to allow.)
+- Prevent DBus socket access. (Use `-b` to allow.)
+- Prevent access to user name information. (Use `-u` to allow.)
 - **allow write access** to the **current working directory**
 - **allow** read only access to all paths in `$NIX_PROFILES`
-- **allow** read only access to [nix store and config and bin paths](./wrap.sh:90)
-- **allow** access to a set of [common environment variables](./wrap.sh:8)
-
-### Command line utility
-The wrap command allows you to sandbox applications ad-hoc with a simple and intuitive interface. With wrap, you can create a secure environment on the fly for a single instance of an application run, without the need for persistent configurations or changes to the system. This is particularly useful for testing, running untrusted software, or limiting access to system resources.
+- **allow** read only access to [nix store and config and bin paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L90)
+- **allow** access to a set of [common environment variables](https://github.com/rti/nixwrap/blob/main/wrap.sh#L9)
 
 #### General syntax:
 `wrap [OPTIONS] -- [bwrap args] [program to wrap with args]`
@@ -80,19 +79,15 @@ The wrap command allows you to sandbox applications ad-hoc with a simple and int
            (man bwrap(1)) to unshare manually.
 ```
 
-### NixOS Utility
-This extends the convenience of `wrap` by offering a Nix function that wraps packages to always run in a sandbox environment. 
+### Wrap binaries via Nix
 
 #### Flake
-Add the Nixwrap flake as an input in your NixOS system flake.
+Add the Nixwrap flake as an input in your flake.
 
 ```nix
 {
   inputs = {
-    # ...
-
     wrap.url = "github:rti/nixwrap";
-    wrap.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   # outputs ...
@@ -107,22 +102,18 @@ To wrap a package, use the function from `inputs.wrap.lib.wrap`. It takes the fo
 
 The function returns a new package wrapping the given package.
 
+E.g. to wrap `nodejs` with access to current working directory (default) and additional network access, do:
+
 ```nix
-(pkgs, inputs, ...):
-{
-    /* wrap node with network access */
-    environment.systemPackages = [ 
-        (inputs.wrap.packages.wrap {
-            package = pkgs.nodejs;
-            executable = "node";
-            wrapArgs = "-n";
-        })
-    ];
+inputs.wrap.packages.wrap {
+  package = pkgs.nodejs;
+  executable = "node";
+  wrapArgs = "-n";
 }
 ```
 
 ## Supported platforms
-It is tested exclusively on NixOS, even though the concept should work in any distribution that ships a current kernel.
+Nixwrap is at the moment tested exclusively on NixOS, even though the concept should work in any distribution that ships a current kernel.
 
 ## License
 `wrap` is licensed under the MIT License. See the LICENSE file for more details.
