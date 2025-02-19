@@ -1,19 +1,24 @@
 {
-  description = "nix wrap - Easy application sandboxing";
+  description = "nixwrap - Easy application sandboxing";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+  inputs.systems.url = "github:nix-systems/default";
+  inputs.flake-utils.url = "github:numtide/flake-utils";
+  inputs.flake-utils.inputs.systems.follows = "systems";
 
-  outputs = { self, nixpkgs, ... }:
-    let
-      pkgs = nixpkgs.legacyPackages."x86_64-linux";
-
-    in
-    {
-      lib = import ./lib.nix { inherit pkgs; };
-
-      packages = {
-        wrap = pkgs.callPackage ./package.nix { };
-        default = self.packages."x86_64-linux".wrap;
-      };
-    };
+  outputs =
+    { nixpkgs, flake-utils, ... }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+      {
+        lib = import ./lib.nix { inherit nixpkgs; };
+        packages = rec {
+          wrap = pkgs.callPackage ./package.nix { };
+          default = wrap;
+        };
+      }
+    );
 }
