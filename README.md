@@ -10,7 +10,7 @@ The goal of Nixwrap is to make sandboxing easy to use for common use cases, redu
 
 ### npm install
 
-> You need to run `npm install` on a project, but you cannot not trust all its dependencies.
+> You need to run `npm install` on a project, but you cannot trust all its dependencies.
 
 To run `npm install` only with write access to the current working directory and network access, simply do:
 ```shell
