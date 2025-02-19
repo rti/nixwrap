@@ -258,6 +258,21 @@ for p in ${NIX_PROFILES}; do
   fi
 done
 IFS=$OLDIFS
+if [ -d /bin ]; then
+    bwrap_opts+=(--ro-bind /bin /bin)
+fi
+
+if [ -d /usr/bin ]; then
+    bwrap_opts+=(--ro-bind /usr/bin /usr/bin)
+fi
+
+if [ -d /etc/nix ]; then
+    bwrap_opts+=(--ro-bind /etc/nix /etc/nix)
+fi
+
+if [ -d /etc/static/nix ]; then
+    bwrap_opts+=(--ro-bind /etc/static/nix /etc/static/nix)
+fi
 
 for e in "${env_vars[@]}"; do
   if [ -v "$e" ]; then
@@ -270,11 +285,7 @@ bwrap \
   --dev /dev \
   --proc /proc \
   --tmpfs /tmp \
-  --ro-bind /bin /bin \
-  --ro-bind /usr/bin /usr/bin \
   --ro-bind /nix /nix \
-  --ro-bind /etc/nix /etc/nix \
-  --ro-bind /etc/static/nix /etc/static/nix \
   --bind "$TMPDIR" "$TMPDIR" \
   --dir "$HOME" \
   "${bwrap_opts[@]}" \
