@@ -1,6 +1,6 @@
-{ stdenvNoCC, makeWrapper, lib, path }:
+{ stdenvNoCC, lib }:
 
-stdenvNoCC.mkDerivation rec {
+stdenvNoCC.mkDerivation {
   name = "wrap";
   src = ./.;
 
@@ -10,7 +10,7 @@ stdenvNoCC.mkDerivation rec {
   '';
 
   meta = with lib; {
-    description = "Easy application sandbox";
+    description = "Easy application sandboxing";
     homepage = "https://github.com/rti/nixwrap";
     license = licenses.mit;
     maintainers = with maintainers; [ rti ];
