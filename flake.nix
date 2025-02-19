@@ -15,7 +15,7 @@
       in
       rec {
 
-        lib = import ./lib.nix { inherit nixpkgs; };
+        lib = import ./lib.nix { inherit pkgs; };
 
         packages = rec {
           wrap = pkgs.callPackage ./package.nix { };
