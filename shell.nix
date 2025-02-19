@@ -13,4 +13,8 @@ pkgs.mkShell {
       ${pkgs.shfmt}/bin/shfmt --indent 2 --write *.sh
     '')
   ];
+
+  shellHook = ''
+    ${pkgs.figlet}/bin/figlet "nixwrap"
+  '';
 }
