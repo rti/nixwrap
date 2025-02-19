@@ -4,7 +4,7 @@ IFS=$'\n\t'
 
 bwrap_opts=()
 
-# environment variables alwyas shared with the wrapped process 
+# environment variables alwyas shared with the wrapped process
 # for usability and convenience
 env_vars=(
   EDITOR
@@ -56,7 +56,7 @@ env_vars=(
   TZDIR
 )
 
-# environment variables only shared with the wrapped process 
+# environment variables only shared with the wrapped process
 # when running with -d desktop access
 env_vars_desktop=(
   DISPLAY
