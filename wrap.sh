@@ -250,14 +250,17 @@ if [[ $share_cwd -eq 1 ]]; then
   bwrap_opts+=(--chdir "$cwd")
 fi
 
-OLDIFS=$IFS
-IFS=" "
-for p in ${NIX_PROFILES}; do
-  if [[ -d "$p" ]]; then
-    bwrap_opts+=(--ro-bind "$p" "$p")
-  fi
-done
-IFS=$OLDIFS
+if [ -v NIX_PROFILES ]; then
+  OLDIFS=$IFS
+  IFS=" "
+  for p in ${NIX_PROFILES}; do
+    if [[ -d "$p" ]]; then
+      bwrap_opts+=(--ro-bind "$p" "$p")
+    fi
+  done
+  IFS=$OLDIFS
+fi
+
 if [ -d /bin ]; then
     bwrap_opts+=(--ro-bind /bin /bin)
 fi
