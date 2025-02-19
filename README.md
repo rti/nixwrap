@@ -35,7 +35,18 @@ Run a python script with Pulse Audio and Pipewire access, but not sharing the cu
 wrap -a -p python my-tool.py
 ```
 
-## Usage
+## How to use
+
+By default, Nixwrap will:
+- prevent network access
+- prevent access to user name information
+- prevent dbus socket access
+- prevent access to wayland and X sockets
+- **allow write access** to the **current working directory**
+- **allow** read only access to all paths in `$NIX_PROFILES`
+- **allow** read only access to [nix store and config and bin paths](./wrap.sh:90)
+- **allow** access to a set of [common environment variables](./wrap.sh:8)
+
 ### Command line utility
 The wrap command allows you to sandbox applications ad-hoc with a simple and intuitive interface. With wrap, you can create a secure environment on the fly for a single instance of an application run, without the need for persistent configurations or changes to the system. This is particularly useful for testing, running untrusted software, or limiting access to system resources.
 
