@@ -168,10 +168,23 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
   # grant desktop access, wayland, X11, DRI
   d)
     bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
-    bwrap_opts+=(--dev-bind /dev/dri /dev/dri)
-    bwrap_opts+=(--ro-bind /run/opengl-driver /run/opengl-driver)
-    bwrap_opts+=(--ro-bind /sys/ /sys/)
-    bwrap_opts+=(--ro-bind /etc/fonts /etc/fonts)
+
+    if [ -f /dev/dri ]; then
+      bwrap_opts+=(--dev-bind /dev/dri /dev/dri)
+    fi
+    
+    if [ -f /run/opengl-driver ]; then
+      bwrap_opts+=(--ro-bind /run/opengl-driver /run/opengl-driver)
+    fi
+
+    if [ -f /sys ]; then
+      bwrap_opts+=(--ro-bind /sys/ /sys/)
+    fi
+
+    if [ -f /etc/fonts ]; then
+      bwrap_opts+=(--ro-bind /etc/fonts /etc/fonts)
+    fi
+
     env_vars+=("${env_vars_desktop[@]}")
     ;;
 
