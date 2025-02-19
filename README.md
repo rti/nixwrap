@@ -44,10 +44,10 @@ By default, Nixwrap will:
 - Prevent audio access. (Use `-a` to allow.)
 - Prevent DBus socket access. (Use `-b` to allow.)
 - Prevent access to user name information. (Use `-u` to allow.)
-- **allow write access** to the **current working directory**
-- **allow** read only access to all paths in `$NIX_PROFILES`
-- **allow** read only access to [nix store and config and bin paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L90)
-- **allow** access to a set of [common environment variables](https://github.com/rti/nixwrap/blob/main/wrap.sh#L9)
+- **allow write access** to the **current working directory**.
+- **allow** read only access to all paths in `$NIX_PROFILES`.
+- **allow** read only access to [nix store and config and bin paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L90).
+- **allow** access to a set of [common environment variables](https://github.com/rti/nixwrap/blob/main/wrap.sh#L9).
 
 #### General syntax:
 `wrap [OPTIONS] -- [bwrap args] [program to wrap with args]`
