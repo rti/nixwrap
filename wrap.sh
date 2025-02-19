@@ -262,19 +262,19 @@ if [ -v NIX_PROFILES ]; then
 fi
 
 if [ -d /bin ]; then
-    bwrap_opts+=(--ro-bind /bin /bin)
+  bwrap_opts+=(--ro-bind /bin /bin)
 fi
 
 if [ -d /usr/bin ]; then
-    bwrap_opts+=(--ro-bind /usr/bin /usr/bin)
+  bwrap_opts+=(--ro-bind /usr/bin /usr/bin)
 fi
 
 if [ -d /etc/nix ]; then
-    bwrap_opts+=(--ro-bind /etc/nix /etc/nix)
+  bwrap_opts+=(--ro-bind /etc/nix /etc/nix)
 fi
 
 if [ -d /etc/static/nix ]; then
-    bwrap_opts+=(--ro-bind /etc/static/nix /etc/static/nix)
+  bwrap_opts+=(--ro-bind /etc/static/nix /etc/static/nix)
 fi
 
 for e in "${env_vars[@]}"; do
