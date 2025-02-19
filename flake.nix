@@ -33,12 +33,26 @@
             env-home-is-always-exposed = pkgs.runCommand "env-home-is-always-exposed" { } ''
               HOME=/homedir ${wrap-bin} ${bash-bin} -c 'echo $HOME' | grep homedir > $out
             '';
+            env-editor-is-always-exposed = pkgs.runCommand "env-editor-is-always-exposed" { } ''
+              EDITOR=myeditor ${wrap-bin} ${bash-bin} -c 'echo $EDITOR' | grep myeditor > $out
+            '';
             user-name-is-hidden = pkgs.runCommand "user-name-is-hidden" { } ''
               ${wrap-bin} whoami 2> error-msg || true
               cat error-msg | grep "cannot find name for user ID" > $out
             '';
             user-name-is-exposed = pkgs.runCommand "user-name-is-exposed" { } ''
               ${wrap-bin} -u whoami > $out
+            '';
+            env-wayland-display-is-hidden = pkgs.runCommand "env-wayland-display-is-hidden" { } ''
+              WAYLAND_DISPLAY=wl-0 ${wrap-bin} ${bash-bin} -c 'set -u; echo $WAYLAND_DISPLAY' 2> error-msg || true
+              cat error-msg | grep "WAYLAND_DISPLAY: unbound variable" > $out
+            '';
+            env-wayland-display-is-exposed-with-d = pkgs.runCommand "env-wayland-display-is-exposed-with-d" { } ''
+              export XDG_RUNTIME_DIR="/tmp"
+              export WAYLAND_DISPLAY="wl-0"
+              mkdir -p $XDG_RUNTIME_DIR
+              touch $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY
+              ${wrap-bin} -d ${bash-bin} -c 'echo $WAYLAND_DISPLAY' | grep wl-0 > $out
             '';
           };
       }
