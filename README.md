@@ -40,10 +40,10 @@ wrap -a -p python my-tool.py
 By default, Nixwrap will:
 - ✅ Prevent network access. (Use `-n` to allow.)
 - ✅ Prevent access to Wayland and X. (Use `-d` (desktop) to allow.)
-- ✅ revent camera access. (Use `-c` to allow.)
-- ✅ revent audio access. (Use `-a` to allow.)
-- ✅ revent DBus socket access. (Use `-b` to allow.)
-- ✅ revent access to user name information. (Use `-u` to allow.)
+- ✅ Prevent camera access. (Use `-c` to allow.)
+- ✅ Prevent audio access. (Use `-a` to allow.)
+- ✅ Prevent DBus socket access. (Use `-b` to allow.)
+- ✅ Prevent access to user name information. (Use `-u` to allow.)
 - ❗ **Allow write access** to the **current working directory**.
 - ❗ **Allow** read only access to all paths in `$NIX_PROFILES`.
 - ❗ **Allow** read only access to [nix store and config and bin paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L90).
