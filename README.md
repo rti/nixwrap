@@ -2,30 +2,33 @@
 
 <p align="center"><img src="./wrap.jpg" alt="A cute wrap, the mascot of Nixwrap" style="width:400px;"/></p>
 
-Nixwrap is a command-line utility and NixOS utility function to make the process of sandboxing applications simple and straightforward. With Nixwrap, you can easily isolate applications from the rest of your system, controlling their access to the filesystem, devices, and network, enhancing your system's security and privacy. `wrap` serves as a frontend to `bwrap` [Bubblewrap](https://github.com/containers/bubblewrap), integrating its functionalities with additional options to enhance the user experience.
+Nixwrap is a command line utility to easily wrap a processes in a sandbox preventing them from accessing your system. Nixwrap can hinder access to environment variables, files, devices and the network. Under the hood, Nixwrap is based on [Bubblewrap](https://github.com/containers/bubblewrap) which in turn uses [Linux Namespaces](https://www.man7.org/linux/man-pages/man7/user_namespaces.7.html).
 
-## Features
-- Easy-to-use command-line interface.
-- Flexible mounting options for filesystem control.
-- Current working directory shared by default, can be disabled.
-- Options for granting access to Wayland display, DBus, network, audio, and camera.
-- Add wrap'd packages to your NixOS environment 
+The goal of Nixwrap is to make sandboxing easy to use for common use cases, reducing the barrier to entry. While it will not provide perfect protection against any untrusted code, it does add protection for simple common threads.
 
 ## Examples
 
-Run `npm install` with write access to the current working directory and network access.
+### npm install
+
+You need to run `npm install` on a project, but you cannot not trust all its dependencies.
+
+To run `npm install` only with write access to the current working directory and network access, simply do:
 ```shell
 wrap -n npm install
 ```
 
-Run a random python script with Pulse Audio and Pipewire access, but not sharing the current working directory.
-```shell
-wrap -p -a python my-tool.py
-```
+### GUI Application using nix3-run
 
-Run software you do not trust directly from `nix3-run`, in this case vscodium with network and display access.
+Run software you do not trust using `nix3-run`, in this case vscodium with network and display access:
 ```shell
 wrap -n -d nix run nixpkgs#vscodium
+```
+
+### Python tool
+
+Run a random python script with Pulse Audio and Pipewire access, but not sharing the current working directory:
+```shell
+wrap -p -a python my-tool.py
 ```
 
 ## Usage
@@ -102,6 +105,9 @@ The function returns a new package wrapping the given package.
     ];
 }
 ```
+
+## Supported platforms
+It is tested exclusively on NixOS, even though the concept should work in any distribution that ships a current kernel.
 
 ## License
 `wrap` is licensed under the MIT License. See the LICENSE file for more details.
