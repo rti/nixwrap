@@ -87,37 +87,39 @@ env_vars_desktop=(
 )
 
 usage() {
+  cat <<END_OF_LOGO
+ _ __ (_)_  ____      ___ __ __ _ _ __  
+| '_ \\| \\ \\/ /\\ \\ /\\ / / '__/ _\` | '_ \\ 
+| | | | |>  <  \\ V  V /| | | (_| | |_) |
+|_| |_|_/_/\\_\\  \\_/\\_/ |_|  \\__,_| .__/ 
+                                 |_|   
+END_OF_LOGO
   cat <<END_OF_USAGE
-__      ___ __ __ _ _ __  
-\\ \\ /\\ / / '__/ _\` | '_ \\ 
- \\ V  V /| | | (_| | |_) |
-  \\_/\\_/ |_|  \\__,_| .__/ 
-                   |_|  
 
-Usage: $(basename "$0") [OPTIONS] -- [bwrap args] [program to wrap with args]
+Usage: wrap [OPTIONS] -- [bwrap args] [program to wrap with args]
 
 OPTIONS:
-  -w PATH  Write mount PATH into sandbox.
-  -r PATH  Read-only mount PATH into sandbox.
-  -d       Wayland display and rendering hardware access.
-  -b       DBus access.
-  -n       Network access.
-  -a       Audio access.
-  -c       Camera access.
-  -u       System user information access.
-  -e VAR   Add env var VAR with its current value.
+  -w PATH  Mount PATH into sandbox in read write mode.
+  -r PATH  Mount PATH into sandbox in read-only mode.
+  -d       Allow Wayland display and rendering hardware access.
+  -b       Allow DBus access.
+  -n       Allow Network access.
+  -a       Allow Audio access.
+  -c       Allow Camera access.
+  -u       Allow System user information access.
+  -e VAR   Allow env var VAR access.
+  -v       Verbose output for debugging.
 
-OPTIONS (advanced):
+ADVANCED OPTIONS:
+  -p       Do not share current working directory. By default wrap will share 
+           the current working directory as a write mount and cd into it 
+           before running the program. With this option, wrap will not share 
+           the directory and leave the current directory untouched.
   -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
            and tries to unshare (continue on failues) user and cgroup 
            namespaces. With this option, wrap does not automatically unshare 
            any namespaces. Use together with bwrap --unshare-* options 
            (man bwrap(1)) to unshare manually.
-  -p       Do not share current working directory. By default wrap will share 
-           the current working directory as a write mount and cd into it 
-           before running the program. With this option, wrap will not share 
-           the directory and leave the current directory untouched.
-  -v       Verbose output for debugging.
 END_OF_USAGE
 }
 
