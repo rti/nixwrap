@@ -139,23 +139,33 @@ share_cwd=1
 
 while getopts "r:w:e:abcdhmnpuv" opt; do
   case "$opt" in
+
+  # bind / mount a path readonly in sandbox to the same path as host
   r)
     bwrap_opts+=(--ro-bind "$OPTARG" "$OPTARG")
     ;;
+
+  # bind / mount a path read/write in sandbox to the same path as host
   w)
     bwrap_opts+=(--bind "$OPTARG" "$OPTARG")
     ;;
+
+  # grant access to camera device
   c)
     bwrap_opts+=(--dev-bind "/dev/v4l" "/dev/v4l")
     for i in /dev/video*; do
       bwrap_opts+=(--dev-bind "$i" "$i")
     done
     ;;
+
+  # grant access to dbus system
   b)
     dbus_socket="$(echo "$DBUS_SESSION_BUS_ADDRESS" | cut -d= -f2)"
     bwrap_opts+=(--bind "$dbus_socket" "$dbus_socket")
     env_vars+=(DBUS_SESSION_BUS_ADDRESS)
     ;;
+
+  # grant desktop access, wayland, X11, DRI
   d)
     bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
     bwrap_opts+=(--dev-bind /dev/dri /dev/dri)
@@ -164,38 +174,57 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
     bwrap_opts+=(--ro-bind /etc/fonts /etc/fonts)
     env_vars+=("${env_vars_desktop[@]}")
     ;;
+
+  # grant network access
   n)
     bwrap_opts+=(--share-net)
     bwrap_opts+=(--ro-bind /etc/resolv.conf /etc/resolv.conf)
     bwrap_opts+=(--ro-bind /etc/ssl /etc/ssl)
     bwrap_opts+=(--ro-bind /etc/static/ssl /etc/static/ssl)
     ;;
+
+  # grant audio access
   a)
     bwrap_opts+=(--bind-try "$XDG_RUNTIME_DIR/pulse/native" "$XDG_RUNTIME_DIR/pulse/native")
     bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/pipewire-0" "$XDG_RUNTIME_DIR/pipewire-0")
     bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/pipewire-0.lock" "$XDG_RUNTIME_DIR/pipewire-0.lock")
     ;;
+
+  # grant accss to user information
   u)
     bwrap_opts+=(--ro-bind /etc/passwd /etc/passwd)
     bwrap_opts+=(--ro-bind /etc/group /etc/group)
     env_vars+=(USER)
     ;;
+
+  # manually grant access to additional environment variables
   e)
     env_vars+=("$OPTARG")
     ;;
+
+  # by default nixwrap will run bwrap with --unshare-all,
+  # this disables it, see man bwrap(1)
   m)
     unshare_all=0
     ;;
+
+  # by default nixwrap will share the current working directory
+  # with the wrapped process, this disables it
   p)
     share_cwd=0
     ;;
+
+  # verbose script outputs for debugging
   v)
     set -x
     ;;
+
+  # help - display usage information
   h)
     usage
     exit 0
     ;;
+
   \?)
     usage
     exit 1
