@@ -86,6 +86,16 @@ env_vars_desktop=(
   XCURSOR_THEME
 )
 
+# paths shared read only be default
+paths_general=(
+  /nix
+  /etc/nix
+  /etc/static/nix
+
+  /bin
+  /usr/bin
+)
+
 usage() {
   cat <<END_OF_LOGO
  _ __ (_)_  ____      ___ __ __ _ _ __  
@@ -276,21 +286,11 @@ if [ -v NIX_PROFILES ]; then
   IFS=$OLDIFS
 fi
 
-if [ -d /bin ]; then
-  bwrap_opts+=(--ro-bind /bin /bin)
-fi
-
-if [ -d /usr/bin ]; then
-  bwrap_opts+=(--ro-bind /usr/bin /usr/bin)
-fi
-
-if [ -d /etc/nix ]; then
-  bwrap_opts+=(--ro-bind /etc/nix /etc/nix)
-fi
-
-if [ -d /etc/static/nix ]; then
-  bwrap_opts+=(--ro-bind /etc/static/nix /etc/static/nix)
-fi
+for p in "${paths_general[@]}"; do
+  if [ -d $p ]; then
+    bwrap_opts+=(--ro-bind "$p" "$p")
+  fi
+done
 
 for e in "${env_vars[@]}"; do
   if [ -v "$e" ]; then
@@ -303,7 +303,6 @@ bwrap \
   --dev /dev \
   --proc /proc \
   --tmpfs /tmp \
-  --ro-bind /nix /nix \
   --bind "$TMPDIR" "$TMPDIR" \
   --dir "$HOME" \
   "${bwrap_opts[@]}" \
