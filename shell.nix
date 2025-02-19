@@ -3,6 +3,10 @@
 }:
 pkgs.mkShell {
   buildInputs = [
+    pkgs.bubblewrap
+
+    (pkgs.callPackage ./package.nix { })
+
     (pkgs.writeShellScriptBin "format" ''
       set -xe
       ${pkgs.nixfmt-rfc-style}/bin/nixfmt *.nix
