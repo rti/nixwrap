@@ -14,6 +14,7 @@ env_vars=(
   LIBEXEC_PATH
   PAGER
   PATH
+  PKG_CONFIG_PATH
   PWD
   SHELL
 
