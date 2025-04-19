@@ -1,4 +1,4 @@
-# Nixwrap - Easy Application Sandboxing
+# Nixwrap - Easy Application Sandboxing on NixOS
 
 <p align="center"><img src="./wrap.jpg" alt="A cute wrap, the mascot of Nixwrap" style="width:400px;"/></p>
 
