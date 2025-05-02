@@ -1,6 +1,6 @@
 # Nixwrap - Easy Application Sandboxing on NixOS
 
-<p align="center"><img src="./wrap.jpg" alt="A cute wrap, the mascot of Nixwrap" style="width:400px;"/></p>
+<p align="center"><img src="./wrap.png" alt="A cute wrap, the mascot of Nixwrap" style="width:400px;"/></p>
 
 Nixwrap is a command line utility to easily wrap processes in a sandbox preventing them from accessing your system. Nixwrap can hinder access to environment variables, files, devices and the network. Under the hood, Nixwrap is based on [Bubblewrap](https://github.com/containers/bubblewrap) which in turn uses [Linux Namespaces](https://www.man7.org/linux/man-pages/man7/user_namespaces.7.html).
 
