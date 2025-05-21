@@ -4,7 +4,7 @@ IFS=$'\n\t'
 
 bwrap_opts=()
 
-# environment variables alwyas shared with the wrapped process
+# environment variables always shared with the wrapped process
 # for usability and convenience
 env_vars=(
   EDITOR
@@ -30,7 +30,8 @@ env_vars=(
   XDG_DATA_DIRS
   XDG_DATA_HOME
   XDG_DESKTOP_PORTAL_DIR
-  XDG_RUNTIME_DIR XDG_SEAT
+  XDG_RUNTIME_DIR
+  XDG_SEAT
   XDG_SESSION_CLASS
   XDG_SESSION_ID
   XDG_SESSION_TYPE
@@ -87,7 +88,7 @@ env_vars_desktop=(
   XCURSOR_THEME
 )
 
-# paths shared read only be default
+# paths shared read only by default
 paths_general=(
   /nix
   /etc/nix
@@ -112,7 +113,7 @@ Usage: wrap [OPTIONS] -- [bwrap args] [program to wrap with args]
 OPTIONS:
   -w PATH  Mount PATH into sandbox in read write mode.
   -r PATH  Mount PATH into sandbox in read-only mode.
-  -d       Allow Wayland display and rendering hardware access.
+  -d       Allow desktop access (either Wayland or X11, plus rendering hardware).
   -b       Allow DBus access.
   -n       Allow Network access.
   -a       Allow Audio access.
@@ -127,7 +128,7 @@ ADVANCED OPTIONS:
            before running the program. With this option, wrap will not share 
            the directory and leave the current directory untouched.
   -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
-           and tries to unshare (continue on failues) user and cgroup 
+           and tries to unshare (continue on failures) user and cgroup 
            namespaces. With this option, wrap does not automatically unshare 
            any namespaces. Use together with bwrap --unshare-* options 
            (man bwrap(1)) to unshare manually.
@@ -178,26 +179,42 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
     env_vars+=(DBUS_SESSION_BUS_ADDRESS)
     ;;
 
-  # grant desktop access, wayland, X11, DRI
+  # grant desktop access (Wayland or X11) and rendering hardware access
   d)
-    bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+      # Using Wayland: bind the Wayland display socket
+      bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
+    elif [ -n "${DISPLAY:-}" ]; then
+      # Using X11: bind the X11 socket directory
+      # The standard location is usually /tmp/.X11-unix.
+      if [ -d "/tmp/.X11-unix" ]; then
+        bwrap_opts+=(--ro-bind "/tmp/.X11-unix" "/tmp/.X11-unix")
+      fi
 
-    if [ -f /dev/dri ]; then
+      # Bind the .Xauthority file so that the authorization data is available.
+      if [ -n "XAUTHORITY" ]; then
+        bwrap_opts+=(--ro-bind "$XAUTHORITY" "$HOME/.Xauthority")
+        env_vars+=(XAUTHORITY)
+      fi
+    fi
+
+    if [ -e /dev/dri ]; then
       bwrap_opts+=(--dev-bind /dev/dri /dev/dri)
     fi
 
-    if [ -f /run/opengl-driver ]; then
+    if [ -e /run/opengl-driver ]; then
       bwrap_opts+=(--ro-bind /run/opengl-driver /run/opengl-driver)
     fi
 
-    if [ -f /sys ]; then
+    if [ -d /sys ]; then
       bwrap_opts+=(--ro-bind /sys/ /sys/)
     fi
 
-    if [ -f /etc/fonts ]; then
+    if [ -d /etc/fonts ]; then
       bwrap_opts+=(--ro-bind /etc/fonts /etc/fonts)
     fi
 
+    # Append all desktop-related env variables
     env_vars+=("${env_vars_desktop[@]}")
     ;;
 
@@ -216,7 +233,7 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
     bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/pipewire-0.lock" "$XDG_RUNTIME_DIR/pipewire-0.lock")
     ;;
 
-  # grant accss to user information
+  # grant access to user information
   u)
     bwrap_opts+=(--ro-bind /etc/passwd /etc/passwd)
     bwrap_opts+=(--ro-bind /etc/group /etc/group)
@@ -259,7 +276,6 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
     usage
     exit 1
     ;;
-  *) ;;
   esac
 done
 
@@ -288,7 +304,7 @@ if [ -v NIX_PROFILES ]; then
 fi
 
 for p in "${paths_general[@]}"; do
-  if [ -d $p ]; then
+  if [ -d "$p" ]; then
     bwrap_opts+=(--ro-bind "$p" "$p")
   fi
 done
