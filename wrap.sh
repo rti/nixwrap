@@ -192,7 +192,7 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
       fi
 
       # Bind the .Xauthority file so that the authorization data is available.
-      if [ -n "XAUTHORITY" ]; then
+      if [ -n "${XAUTHORITY}" ]; then
         bwrap_opts+=(--ro-bind "$XAUTHORITY" "$HOME/.Xauthority")
         env_vars+=(XAUTHORITY)
       fi
