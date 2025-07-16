@@ -202,7 +202,7 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
       bwrap_opts+=(--dev-bind /dev/dri /dev/dri)
     fi
 
-    if [ -e /run/opengl-driver ]; then
+    if [ -d /run/opengl-driver ]; then
       bwrap_opts+=(--ro-bind /run/opengl-driver /run/opengl-driver)
     fi
 
