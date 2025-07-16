@@ -198,7 +198,7 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
       fi
     fi
 
-    if [ -e /dev/dri ]; then
+    if [ -d /dev/dri ]; then
       bwrap_opts+=(--dev-bind /dev/dri /dev/dri)
     fi
 
