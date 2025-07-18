@@ -184,8 +184,9 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
     if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
       # Using Wayland: bind the Wayland display socket
       bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
-      
-      if [ -n "${DISPLAY:-}" ]; then
+    fi
+   
+    if [ -n "${DISPLAY:-}" ]; then
       # Using X11: bind the X11 socket directory
       # The standard location is usually /tmp/.X11-unix.
       if [ -d "/tmp/.X11-unix" ]; then
