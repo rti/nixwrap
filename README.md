@@ -56,7 +56,7 @@ By default, Nixwrap will:
 ```
   -w PATH  Mount PATH into sandbox in read write mode.
   -r PATH  Mount PATH into sandbox in read-only mode.
-  -d       Allow Wayland display and rendering hardware access.
+  -d       Allow desktop access, Wayland, X11, and rendering hardware.
   -b       Allow DBus access.
   -n       Allow Network access.
   -a       Allow Audio access.

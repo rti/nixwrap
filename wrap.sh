@@ -113,7 +113,7 @@ Usage: wrap [OPTIONS] -- [bwrap args] [program to wrap with args]
 OPTIONS:
   -w PATH  Mount PATH into sandbox in read write mode.
   -r PATH  Mount PATH into sandbox in read-only mode.
-  -d       Allow desktop access (either Wayland or X11, plus rendering hardware).
+  -d       Allow desktop access, Wayland, X11, and rendering hardware.
   -b       Allow DBus access.
   -n       Allow Network access.
   -a       Allow Audio access.
