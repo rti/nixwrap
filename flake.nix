@@ -67,6 +67,44 @@
                 '';
               }
               {
+                name = "d-exposes-env-x11-display";
+                test = ''
+                  export DISPLAY=":0"
+                  ${wrap-bin} -d ${bash-bin} -c 'echo $DISPLAY' | grep ":0" > $out
+                '';
+              }
+              {
+                name = "d-exposes-socket-x11";
+                test = ''
+                  mkdir -p /tmp/.X11-unix
+                  touch /tmp/.X11-unix/X12345
+                  export DISPLAY=":12345"
+                  ${wrap-bin} -d ${bash-bin} -c 'ls /tmp/.X11-unix/X12345' > $out
+                  rm /tmp/.X11-unix/X12345
+                '';
+              }
+              {
+                name = "d-exposes-xauthority";
+                test = ''
+                  export DISPLAY=":12345"
+                  export HOME=/tmp/home
+                  mkdir -p $HOME
+                  touch $HOME/.Xauthority
+                  ${wrap-bin} -d ${bash-bin} -c 'cat $HOME/.Xauthority' > $out
+                '';
+              }
+              {
+                name = "d-exposes-custom-xauthority";
+                test = ''
+                  export DISPLAY=":12345"
+                  export XAUTHORITY="myxauthfile"
+                  export HOME=/tmp/home
+                  mkdir -p $HOME
+                  touch $HOME/$XAUTHORITY
+                  ${wrap-bin} -d ${bash-bin} -c 'cat $HOME/.Xauthority' > $out
+                '';
+              }
+              {
                 name = "r-exposes-path-readonly";
                 test = ''
                   mkdir -p /tmp/some-dir
