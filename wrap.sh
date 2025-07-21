@@ -185,7 +185,7 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
       # Using Wayland: bind the Wayland display socket
       bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
     fi
-   
+
     if [ -n "${DISPLAY:-}" ]; then
       # Using X11: bind the X11 socket directory
       # The standard location is usually /tmp/.X11-unix.
@@ -194,9 +194,12 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
       fi
 
       # Bind the .Xauthority file so that the authorization data is available.
-      if [ -n "${XAUTHORITY}" ]; then
-        bwrap_opts+=(--ro-bind "$XAUTHORITY" "$HOME/.Xauthority")
-        env_vars+=(XAUTHORITY)
+      if [ -n "${XAUTHORITY:-}" ]; then
+        # Bind a custom path Xauthority file to the standard path in the sandbox
+        bwrap_opts+=(--ro-bind "${HOME}/${XAUTHORITY}" "$HOME/.Xauthority")
+      elif [ -f "$HOME/.Xauthority" ]; then
+        # Bind the standard path Xauthority file to the sandbox
+        bwrap_opts+=(--ro-bind "$HOME/.Xauthority" "$HOME/.Xauthority")
       fi
     fi
 
