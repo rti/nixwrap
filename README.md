@@ -46,7 +46,8 @@ By default, Nixwrap will:
 - ✅ Prevent access to user name information. (Use `-u` to allow.)
 - ❗ **Allow write access** to the **current working directory**.
 - ❗ **Allow** read only access to all paths in `$NIX_PROFILES`.
-- ❗ **Allow** read only access to [nix store and config and bin paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L90).
+- ❗ **Allow** read only access to [nix store and config paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L92).
+- ❗ **Allow** read only access to [common bin and lib paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L97).
 - ❗ **Allow** access to a set of [common environment variables](https://github.com/rti/nixwrap/blob/main/wrap.sh#L9).
 
 #### General syntax:

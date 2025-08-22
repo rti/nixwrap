@@ -96,6 +96,8 @@ paths_general=(
 
   /bin
   /usr/bin
+  /lib
+  /lib64
 )
 
 usage() {
