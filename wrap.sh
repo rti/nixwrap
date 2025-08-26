@@ -128,15 +128,15 @@ END_OF_LOGO
 Usage: wrap [OPTIONS] [-- BWRAP_ARGS] PROGRAM_TO_WRAP_WITH_ARGS
 
 OPTIONS:
-  -w PATH  Mount PATH into sandbox in read write mode.
-  -r PATH  Mount PATH into sandbox in read-only mode.
   -d       Allow desktop access, Wayland, X11, and rendering hardware.
-  -b       Allow DBus access.
   -n       Allow Network access.
   -a       Allow Audio access.
   -c       Allow Camera access.
+  -b       Allow DBus access.
   -u       Allow System user information access.
   -e VAR   Allow env var VAR access.
+  -r PATH  Mount PATH into sandbox in read-only mode.
+  -w PATH  Mount PATH into sandbox in read write mode.
   -v       Verbose output for debugging.
 
 ADVANCED OPTIONS:
