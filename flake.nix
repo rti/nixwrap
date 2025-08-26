@@ -124,13 +124,149 @@
                   cat /tmp/some-dir/test-file | grep "more" > $out
                 '';
               }
+              {
+                name = "cwd-exposed-by-default";
+                test = ''
+                  mkdir -p /tmp/some-dir
+                  cd /tmp/some-dir
+                  echo "file-content" > test-file
+                  ${wrap-bin} ${bash-bin} -c 'cat test-file' | grep "file-content" > $out
+                '';
+              }
+              {
+                name = "cwd-not-exposed-by-p";
+                test = ''
+                  mkdir -p /tmp/some-dir
+                  cd /tmp/some-dir
+                  echo "file-content" > test-file
+                  ${wrap-bin} -p ${bash-bin} -c 'cat test-file; echo $?' | grep 1 > $out
+                '';
+              }
+              {
+                name = "-p-cds-to-root";
+                test = ''
+                  mkdir -p /tmp/new-home
+                  export HOME=/tmp/new-home
+                  ${wrap-bin} -p ${bash-bin} -c 'pwd' | grep / > $out
+                '';
+              }
+
+              {
+                name = "cwd not shared implicitly for home directories";
+                test =
+                  # setup prerequisites
+                  ''
+                    # Setup a home directory and put something in. We expect
+                    # this to NOT be visible in the sandbox because it was not
+                    # shared explicitly and home directories are expluded from
+                    # implicit sharing.
+                    mkdir -p /tmp/new-home
+                    export HOME=/tmp/new-home
+                    touch /tmp/new-home/something-in-home
+
+                    # Make the home directory the cwd
+                    cd $HOME
+                  '' +
+
+                  # prerequisite checks
+                  ''
+                    pwd | grep '^/tmp/new-home$' \
+                      || (echo 'Unexpected: Home directory is not cwd outside sandbox'; false)
+
+                    ls -l /tmp | grep '[[:space:]]new-home$' \
+                      || (echo 'Unexpected: Home directory outside sandbox not found'; false)
+
+                    ls -l $HOME | grep '[[:space:]]something-in-home$' \
+                      || (echo 'Unexpected: File in $HOME outside sandbox not found'; false)
+                  '' +
+
+                  # test
+                  ''
+                    # expect the cwd to be /, because $HOME as cwd is excluded from implicit sharing
+                    ${wrap-bin} ${bash-bin} -c 'pwd' | grep '^/$' \
+                      || (echo 'Unexpected: Cwd in sandbox is not /'; false)
+
+                    ${wrap-bin} ${bash-bin} -c 'ls -l $HOME' | grep '^total 0$' \
+                      || (echo 'Unexpected: Sandbox $HOME is not empty'; false)
+
+                    echo 'test-success' > $out
+                  '';
+              }
+
+              {
+                name = "parameter -f forces to share the cwd $HOME, even though it is excluded from sharing as cwd implicitly";
+                test =
+                  # setup prerequisites
+                  ''
+                    # Setup a home directory and put something in. We expect
+                    # this to be visible in the sandbox because it was shared
+                    # explicitly implicit sharing.
+                    mkdir -p /tmp/new-home
+                    export HOME=/tmp/new-home
+                    touch /tmp/new-home/something-in-home
+
+                    # Make the home directory the cwd
+                    cd $HOME
+                  '' +
+
+                  # prerequisite checks
+                  ''
+                    pwd | grep '^/tmp/new-home$' \
+                      || (echo 'Unexpected: Home directory is not cwd outside sandbox'; false)
+
+                    ls -l /tmp | grep '[[:space:]]new-home$' \
+                      || (echo 'Unexpected: Home directory outside sandbox not found'; false)
+
+                    ls -l $HOME | grep '[[:space:]]something-in-home$' \
+                      || (echo 'Unexpected: File in $HOME outside sandbox not found'; false)
+                  '' +
+
+                  # test
+                  ''
+                    # expect the cwd to be $HOME
+                    ${wrap-bin} -f ${bash-bin} -c 'pwd' | grep '^/tmp/new-home$' \
+                      || (echo 'Unexpected: Cwd in sandbox is not $HOME'; false)
+
+                    ${wrap-bin} -f ${bash-bin} -c 'ls $HOME' | grep '^something-in-home$' \
+                      || (echo 'Unexpected: Sandbox $HOME is empty'; false)
+
+                    echo 'test-success' > $out
+                  '';
+              }
+
+              {
+                name = "parameter -f forces to share the cwd /, even though it is excluded from sharing as cwd implicitly";
+                test =
+                  # setup prerequisits
+                  ''
+                    # / is a directory expluded from implicit cwd sharing
+                    cd /
+                  '' +
+                  # prerequisit checks
+                  ''
+                    pwd | grep "^/$" \
+                      || (echo 'Unexpected: Cwd to be / outside sandbox'; false)
+                    ls -l | grep "[[:space:]]bin$" \
+                      || (echo 'Unexpected: Bin dir is missing in / outside sandbox'; false)
+                  '' +
+                  # test
+                  ''
+                    ${wrap-bin} -f ${bash-bin} -c 'pwd' | grep '^/$' 2> /dev/null \
+                      || (echo 'Unexpected: Cwd in sandbox is not /'; false)
+                    ${wrap-bin} -f ${bash-bin} -c 'ls -l' | grep 'bin$' 2> /dev/null \
+                      || (echo 'Unexpected: Bin dir not in / inside sandbox'; false)
+                    echo 'test-success' > $out
+                  '';
+              }
             ];
           in
           builtins.listToAttrs (
-            map (t: {
-              name = t.name;
-              value = pkgs.runCommand t.name { } t.test;
-            }) tests
+            map
+              (t: {
+                name = t.name;
+                value = pkgs.runCommand t.name { } t.test;
+              })
+              tests
           );
       }
     );

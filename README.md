@@ -73,6 +73,11 @@ By default, Nixwrap will:
            the current working directory as a write mount and cd into it 
            before running the program. With this option, wrap will not share 
            the directory and leave the current directory untouched.
+  -f       Force share current working directory. By default wrap will share
+           the current working directory as a write mount and cd into it only
+           if the directory does not match any of the following patterns: 
+           ^/$, ^/home$, ^\${HOME}$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
+           This option will bypass the check and share the directory regardless. 
   -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
            and tries to unshare (continue on failues) user and cgroup 
            namespaces. With this option, wrap does not automatically unshare 

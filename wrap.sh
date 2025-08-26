@@ -100,6 +100,21 @@ paths_general=(
   /lib64
 )
 
+# paths that are not allowed to be shared as working directories implicitly,
+# unless forced with -f
+paths_disallowed_from_share_cwd=(
+  "^/$"
+  "^/home$"
+  "^${HOME}$"
+
+  "^/boot"
+  "^/etc"
+  "^/proc"
+  "^/run"
+  "^/sys"
+  "^/var"
+)
+
 usage() {
   cat <<END_OF_LOGO
  _ __ (_)_  ____      ___ __ __ _ _ __  
@@ -129,6 +144,11 @@ ADVANCED OPTIONS:
            the current working directory as a write mount and cd into it 
            before running the program. With this option, wrap will not share 
            the directory and leave the current directory untouched.
+  -f       Force share current working directory. By default wrap will share
+           the current working directory as a write mount and cd into it only
+           if the directory does not match any of the following patterns: 
+           ^/$, ^/home$, ^\${HOME}$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
+           This option will bypass the check and share the directory regardless. 
   -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
            and tries to unshare (continue on failures) user and cgroup 
            namespaces. With this option, wrap does not automatically unshare 
@@ -152,8 +172,9 @@ fi
 
 unshare_all=1
 share_cwd=1
+force_share_cwd=0
 
-while getopts "r:w:e:abcdhmnpuv" opt; do
+while getopts "r:w:e:abcdfhmnpuv" opt; do
   case "$opt" in
 
   # bind / mount a path readonly in sandbox to the same path as host
@@ -264,6 +285,13 @@ while getopts "r:w:e:abcdhmnpuv" opt; do
     share_cwd=0
     ;;
 
+  # by default nixwrap will NOT share the current working directory for a set
+  # of possibly sensitive paths. this overwrides this and forces to share these
+  # paths (see paths_disallowed_from_share_cwd)
+  f) 
+    force_share_cwd=1
+    ;;
+
   # verbose script outputs for debugging
   v)
     set -x
@@ -289,14 +317,30 @@ done
 # Shift off the options and optional -- off $@.
 shift $((OPTIND - 1))
 
+# Get the current working directory
+cwd="$(pwd)"
+
+# The directory to change to after launching the sandbox
+bwrap_chdir="/"
+
 if [[ $unshare_all -eq 1 ]]; then
   bwrap_opts+=(--unshare-all "${bwrap_opts[@]}")
 fi
 
+# Check for paths we do not want to share implicitly if we are not forced to
+if [[ $force_share_cwd -eq 0 ]]; then
+  for p in "${paths_disallowed_from_share_cwd[@]}"; do
+    if [[ "$cwd" =~ $p ]]; then
+      # Disable current working directory sharing if pattern matches
+      share_cwd=0
+      break
+    fi
+  done
+fi
+
 if [[ $share_cwd -eq 1 ]]; then
-  cwd="$(pwd)"
   bwrap_opts+=(--bind "$cwd" "$cwd")
-  bwrap_opts+=(--chdir "$cwd")
+  bwrap_chdir="$cwd"
 fi
 
 if [ -v NIX_PROFILES ]; then
@@ -323,6 +367,7 @@ for e in "${env_vars[@]}"; do
 done
 
 bwrap \
+  --chdir "$bwrap_chdir" \
   --clearenv \
   --dev /dev \
   --proc /proc \
