@@ -44,7 +44,7 @@ By default, Nixwrap will:
 - ✅ Prevent audio access. (Use `-a` to allow.)
 - ✅ Prevent DBus socket access. (Use `-b` to allow.)
 - ✅ Prevent access to user name information. (Use `-u` to allow.)
-- ❗ **Allow write access** to the **current working directory**.
+- ❗ **Allow write access** to the **current working directory**. (Use `-p` to prevent.)
 - ❗ **Allow** read only access to all paths in `$NIX_PROFILES`.
 - ❗ **Allow** read only access to [nix store and config paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L92).
 - ❗ **Allow** read only access to [common bin and lib paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L97).
