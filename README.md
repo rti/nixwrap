@@ -51,7 +51,7 @@ By default, Nixwrap will:
 - ❗ **Allow** access to a set of [common environment variables](https://github.com/rti/nixwrap/blob/main/wrap.sh#L9).
 
 #### General syntax:
-`wrap [OPTIONS] -- [bwrap args] [program to wrap with args]`
+`wrap [OPTIONS] [-- BWRAP_ARGS] PROGRAM_TO_WRAP_WITH_ARGS`
 
 #### Options
 ```

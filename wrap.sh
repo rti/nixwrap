@@ -125,7 +125,7 @@ usage() {
 END_OF_LOGO
   cat <<END_OF_USAGE
 
-Usage: wrap [OPTIONS] -- [bwrap args] [program to wrap with args]
+Usage: wrap [OPTIONS] [-- BWRAP_ARGS] PROGRAM_TO_WRAP_WITH_ARGS
 
 OPTIONS:
   -w PATH  Mount PATH into sandbox in read write mode.
