@@ -128,7 +128,7 @@ END_OF_LOGO
 Usage: wrap [OPTIONS] [-- BWRAP_ARGS] PROGRAM_TO_WRAP_WITH_ARGS
 
 OPTIONS:
-  -d       Allow desktop access, Wayland, X11, and rendering hardware.
+  -d       Allow Desktop access, Wayland, X11, and rendering hardware.
   -n       Allow Network access.
   -a       Allow Audio access.
   -c       Allow Camera access.

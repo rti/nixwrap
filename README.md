@@ -55,7 +55,7 @@ By default, Nixwrap will:
 
 #### Options
 ```
-  -d       Allow desktop access, Wayland, X11, and rendering hardware.
+  -d       Allow Desktop access, Wayland, X11, and rendering hardware.
   -n       Allow Network access.
   -a       Allow Audio access.
   -c       Allow Camera access.
