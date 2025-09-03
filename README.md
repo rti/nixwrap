@@ -13,6 +13,7 @@ The goal of Nixwrap is to make sandboxing easy to use for common use cases, redu
 > You need to run `npm install` on a project, but you cannot trust all its dependencies.
 
 To run `npm install` only with write access to the current working directory and network access, simply do:
+
 ```shell
 wrap -n npm install
 ```
@@ -22,6 +23,7 @@ wrap -n npm install
 > You need to run a GUI application, but you want limit access to your filesystem.
 
 To run software using `nix3-run`, in this case vscodium with network and display access, without access to your home directory:
+
 ```shell
 wrap -n -d -p nix run nixpkgs#vscodium
 ```
@@ -31,6 +33,7 @@ wrap -n -d -p nix run nixpkgs#vscodium
 > You need to run a `python` script that has access to your audio hardware.
 
 Run a python script with Pulse Audio and Pipewire access, but not sharing the current working directory:
+
 ```shell
 wrap -a -p python my-tool.py
 ```
@@ -38,6 +41,7 @@ wrap -a -p python my-tool.py
 ## How to use
 
 By default, Nixwrap will:
+
 - ✅ Prevent network access. (Use `-n` to allow.)
 - ✅ Prevent access to Wayland and X. (Use `-d` (desktop) to allow.)
 - ✅ Prevent camera access. (Use `-c` to allow.)
@@ -51,9 +55,11 @@ By default, Nixwrap will:
 - ❗ **Allow** access to a set of [common environment variables](https://github.com/rti/nixwrap/blob/main/wrap.sh#L9).
 
 #### General syntax:
+
 `wrap [OPTIONS] [-- BWRAP_ARGS] PROGRAM_TO_WRAP_WITH_ARGS`
 
 #### Options
+
 ```
   -d       Allow Desktop access, Wayland, X11, and rendering hardware.
   -n       Allow Network access.
@@ -68,26 +74,28 @@ By default, Nixwrap will:
 ```
 
 #### Advanced Options
+
 ```
-  -p       Do not share current working directory. By default wrap will share 
-           the current working directory as a write mount and cd into it 
-           before running the program. With this option, wrap will not share 
+  -p       Do not share current working directory. By default wrap will share
+           the current working directory as a write mount and cd into it
+           before running the program. With this option, wrap will not share
            the directory and leave the current directory untouched.
   -f       Force share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it only
-           if the directory does not match any of the following patterns: 
+           if the directory does not match any of the following patterns:
            ^/$, ^/home$, ^\${HOME}$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
-           This option will bypass the check and share the directory regardless. 
-  -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
-           and tries to unshare (continue on failues) user and cgroup 
-           namespaces. With this option, wrap does not automatically unshare 
-           any namespaces. Use together with bwrap --unshare-* options 
+           This option will bypass the check and share the directory regardless.
+  -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts
+           and tries to unshare (continue on failues) user and cgroup
+           namespaces. With this option, wrap does not automatically unshare
+           any namespaces. Use together with bwrap --unshare-* options
            (man bwrap(1)) to unshare manually.
 ```
 
 ### Wrap binaries via Nix
 
 #### Flake
+
 Add the Nixwrap flake as an input in your flake.
 
 ```nix
@@ -101,7 +109,9 @@ Add the Nixwrap flake as an input in your flake.
 ```
 
 #### Wrap a package
+
 To wrap a package, use the function from `inputs.wrap.lib.wrap`. It takes the following arguments:
+
 - `package` The package to wrap.
 - `executable` The name of the executable, optional, defaults to package name.
 - `wrapArgs` Arguments to wrap, see above.
@@ -135,7 +145,6 @@ This example installs `nodejs` in a devShell, but wraps `node` with Nixwrap, so 
         pkgs = nixpkgs.legacyPackages.${system};
       in
       {
-
         devShells.default = pkgs.mkShell {
           buildInputs = [
             (wrap.lib.${system}.wrap {
@@ -151,12 +160,14 @@ This example installs `nodejs` in a devShell, but wraps `node` with Nixwrap, so 
 ```
 
 ## Supported platforms
+
 Nixwrap is at the moment tested exclusively on NixOS, even though the concept should work in any distribution that ships a current kernel.
 
 ## License
+
 `wrap` is licensed under the MIT License. See the LICENSE file for more details.
 
 ## Similar projects
 
- - https://git.sr.ht/~fgaz/nix-bubblewrap
- - https://github.com/Frontear/nix-wrap
+- https://git.sr.ht/~fgaz/nix-bubblewrap
+- https://github.com/Frontear/nix-wrap
