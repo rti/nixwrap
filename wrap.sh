@@ -321,7 +321,7 @@ shift $((OPTIND - 1))
 cwd="$(pwd)"
 
 # The directory to change to after launching the sandbox
-bwrap_chdir="/"
+bwrap_chdir="$HOME"
 
 if [[ $unshare_all -eq 1 ]]; then
   bwrap_opts+=(--unshare-all "${bwrap_opts[@]}")

@@ -260,14 +260,20 @@ pkgs.nixosTest {
           (echo 'Unexpected: cwd exposed when using -p'; false)
       """))
 
-    with subtest("-p cds to root"):
+    with subtest("-p cds to $HOME"):
       machine.succeed(as_alice("""
         mkdir -p /tmp/new-home
         export HOME=/tmp/new-home
+        mkdir -p /tmp/new-home/some-dir
+        cd /tmp/new-home/some-dir
 
-        # Expect pwd to return / in sandbox
-        wrap -p bash -c 'pwd' | grep '^/$' ||
-          (echo 'Unexpected: -p did not change cwd as expected'; false)
+        # Expect pwd to return $HOME in sandbox
+        wrap -p bash -c 'pwd' | grep '^/tmp/new-home$' ||
+          (echo 'Unexpected: -p did not change cwd to $HOME as expected'; false)
+
+        # Expect this home dir to be empty
+        wrap -p bash -c 'ls -l $HOME' | grep '^total 0$' ||
+          (echo 'Unexpected: Sandbox $HOME is not empty'; false)
       """))
 
     with subtest("$HOME as cwd is not shared implicitly"):
@@ -278,20 +284,32 @@ pkgs.nixosTest {
         touch /tmp/new-home/something-in-home
         cd $HOME
 
-        # expect cwd to be changed to /
-        wrap bash -c 'pwd' | grep '^/$' ||
-          (echo 'Unexpected: Cwd in sandbox is not /'; false)
+        # expect cwd to still be $HOME
+        wrap bash -c 'pwd' | grep '^/tmp/new-home$' ||
+          (echo 'Unexpected: Cwd in sandbox is not $HOME'; false)
 
         # expect $HOME to be empty
         wrap bash -c 'ls -l $HOME' | grep '^total 0$' ||
           (echo 'Unexpected: Sandbox $HOME is not empty'; false)
       """))
 
-    with subtest("/etc as cwd is excluded from implicit sharing"):
+    with subtest("/etc as cwd is not shared implicitly"):
+      machine.succeed("""
+        touch /etc/something-in-etc
+      """)
       machine.succeed(as_alice("""
+        # setup prerequisites
+        export HOME=/tmp/new-home
+        mkdir -p /tmp/new-home
         cd /etc
-        wrap bash -c 'pwd' | grep '^/$' ||
-          (echo 'Unexpected: /etc shared implicitly as cwd'; false)
+
+        # expect cwd to still be $HOME
+        wrap bash -c 'pwd' | grep '^/tmp/new-home$' ||
+          (echo 'Unexpected: Cwd in sandbox is not $HOME'; false)
+
+        # expect /etc to not contain file from outside sandbox
+        ! (wrap bash -c 'ls /etc/something-in-etc' | grep '^something-in-etc$') ||
+          (echo 'Unexpected: Sandbox /etc contains file from outside sandbox'; false)
       """))
 
     with subtest("-f forces sharing HOME as cwd"):
