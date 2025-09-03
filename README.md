@@ -121,7 +121,7 @@ The function returns a new package wrapping the given package.
 E.g. to wrap `nodejs` with access to current working directory (default) and additional network access, do:
 
 ```nix
-inputs.wrap.packages.wrap {
+inputs.wrap.lib.wrap {
   package = pkgs.nodejs;
   executable = "node";
   wrapArgs = "-n";
