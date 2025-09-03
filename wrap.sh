@@ -366,7 +366,7 @@ for e in "${env_vars[@]}"; do
   fi
 done
 
-bwrap \
+exec bwrap \
   --chdir "$bwrap_chdir" \
   --clearenv \
   --dev /dev \
