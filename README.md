@@ -155,3 +155,8 @@ Nixwrap is at the moment tested exclusively on NixOS, even though the concept sh
 
 ## License
 `wrap` is licensed under the MIT License. See the LICENSE file for more details.
+
+## Similar projects
+
+ - https://git.sr.ht/~fgaz/nix-bubblewrap
+ - https://github.com/Frontear/nix-wrap
