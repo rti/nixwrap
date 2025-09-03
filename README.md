@@ -20,12 +20,12 @@ wrap -n npm install
 
 ### GUI Application using nix3-run
 
-> You need to run a GUI application, but you want limit access to your filesystem.
+> You need to run a GUI application, but you want limit access to your filesystem and environment variables.
 
-To run software using `nix3-run`, in this case vscodium with network and display access, without access to your home directory:
+To run vscodium using `nix3-run` with network and display access, only writing to `$HOME/some-dir`:
 
 ```shell
-wrap -n -d -p nix run nixpkgs#vscodium
+wrap -n -d -p -w $HOME/some-dir nix run nixpkgs#vscodium
 ```
 
 ### Python tool
