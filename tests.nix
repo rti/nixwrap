@@ -421,6 +421,17 @@ pkgs.nixosTest {
         wrap -p bash -c 'test -d "$HOME" -a -w "$HOME" && echo ok' | grep '^ok$' ||
           (echo 'Unexpected: $HOME not created or not writable inside sandbox'; false)
       """))
+
+    with subtest("r/w shared directory is created if it does not exist"):
+      machine.succeed(as_alice("""
+        export SOME_DIR=/tmp/some-dir
+        rm -rf "$SOME_DIR"
+
+        wrap -p -e SOME_DIR -r "$SOME_DIR" bash -c 'test -d "$SOME_DIR" && echo ok' | grep '^ok$' ||
+          (echo 'Unexpected: -r $SOME_DIR does not create directory'; false)
+        wrap -p -e SOME_DIR -w "$SOME_DIR" bash -c 'test -d "$SOME_DIR" && echo ok' | grep '^ok$' ||
+          (echo 'Unexpected: -w $SOME_DIR does not create directory'; false)
+      """))
   '';
 }
 
