@@ -374,6 +374,7 @@ for e in "${env_vars[@]}"; do
 done
 
 exec bwrap \
+  --new-session \ # to prevent CVE-2017-5226 -- bubblewrap escape via TIOCSTI ioctl https://github.com/containers/bubblewrap/issues/142
   --chdir "$bwrap_chdir" \
   --clearenv \
   --dev /dev \
