@@ -180,7 +180,7 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
   # bind / mount a path readonly in sandbox to the same path as host
   r)
     # Create a directory if the path does not exist
-    mkdir -p "$OPTARG" || true
+    [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
 
     bwrap_opts+=(--ro-bind "$OPTARG" "$OPTARG")
     ;;
@@ -188,7 +188,7 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
   # bind / mount a path read/write in sandbox to the same path as host
   w)
     # Create a directory if the path does not exist
-    mkdir -p "$OPTARG" || true
+    [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
 
     bwrap_opts+=(--bind "$OPTARG" "$OPTARG")
     ;;
