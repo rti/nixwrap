@@ -27,6 +27,7 @@ stdenvNoCC.mkDerivation {
     homepage = "https://github.com/rti/nixwrap";
     license = licenses.mit;
     maintainers = with maintainers; [ rti ];
+    mainProgram = "wrap";
     platforms = platforms.linux;
   };
 }
