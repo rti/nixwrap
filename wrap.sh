@@ -236,6 +236,11 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
       bwrap_opts+=(--dev-bind /dev/dri /dev/dri)
     fi
 
+    # AMD kernel fusion driver
+    if [ -e /dev/kfd ]; then
+      bwrap_opts+=(--dev-bind /dev/kfd /dev/kfd)
+    fi
+
     if [ -d /run/opengl-driver ]; then
       bwrap_opts+=(--ro-bind /run/opengl-driver /run/opengl-driver)
     fi
