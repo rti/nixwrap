@@ -76,6 +76,11 @@ By default, Nixwrap will:
 #### Advanced Options
 
 ```
+  -N NAME  Run inside the existing named network namespace NAME. The namespace
+           must already exist (e.g. created by netns-sandbox.sh). wrap enters it
+           via 'sudo ip netns exec NAME' and drops back to the current user
+           before launching. This keeps the namespace's network instead of
+           unsharing net, and implies network access (-n) so DNS and TLS work.
   -p       Do not share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it
            before running the program. With this option, wrap will not share
