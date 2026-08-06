@@ -211,8 +211,18 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
   # grant desktop access (Wayland or X11) and rendering hardware access
   d)
     if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-      # Using Wayland: bind the Wayland display socket
-      bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
+      # Using Wayland: bind the Wayland display socket.
+      # WAYLAND_DISPLAY may be either a bare socket name (resolved relative to
+      # XDG_RUNTIME_DIR, the common case) or an absolute path (in which case
+      # XDG_RUNTIME_DIR must NOT be prepended). Handle both.
+      if [[ "$WAYLAND_DISPLAY" = /* ]]; then
+        wayland_socket="$WAYLAND_DISPLAY"
+      else
+        wayland_socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+      fi
+      if [ -e "$wayland_socket" ]; then
+        bwrap_opts+=(--bind "$wayland_socket" "$wayland_socket")
+      fi
     fi
 
     if [ -n "${DISPLAY:-}" ]; then
@@ -224,8 +234,17 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
 
       # Bind the .Xauthority file so that the authorization data is available.
       if [ -n "${XAUTHORITY:-}" ]; then
-        # Bind a custom path Xauthority file to the standard path in the sandbox
-        bwrap_opts+=(--ro-bind "${HOME}/${XAUTHORITY}" "$HOME/.Xauthority")
+        # XAUTHORITY may be an absolute path (e.g. /run/user/1000/.mutter-...)
+        # or a bare name resolved relative to $HOME. Handle both, then bind it
+        # to the standard $HOME/.Xauthority path the client expects in sandbox.
+        if [[ "$XAUTHORITY" = /* ]]; then
+          xauth_file="$XAUTHORITY"
+        else
+          xauth_file="${HOME}/${XAUTHORITY}"
+        fi
+        if [ -f "$xauth_file" ]; then
+          bwrap_opts+=(--ro-bind "$xauth_file" "$HOME/.Xauthority")
+        fi
       elif [ -f "$HOME/.Xauthority" ]; then
         # Bind the standard path Xauthority file to the sandbox
         bwrap_opts+=(--ro-bind "$HOME/.Xauthority" "$HOME/.Xauthority")
