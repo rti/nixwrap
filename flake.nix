@@ -24,6 +24,7 @@
 
         lib = import ./lib.nix {
           inherit pkgs;
+          wrapPkg = packages.wrap;
         };
 
         devShells.default = import ./shell.nix {

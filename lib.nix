@@ -1,5 +1,4 @@
-{ pkgs, ... }:
-
+{ pkgs, wrapPkg, ... }:
 {
   wrap =
     {
@@ -14,7 +13,7 @@
       postBuild = ''
         mv $out/bin/${executable}{,-nowrap}
         cat << _EOF > $out/bin/${executable}
-          exec ${./wrap.sh} ${wrapArgs} ${package}/bin/${executable} "\$@"
+        exec ${pkgs.lib.getExe wrapPkg} ${wrapArgs} ${package}/bin/${executable} "\$@"
         _EOF
         chmod a+x $out/bin/${executable}
       '';
