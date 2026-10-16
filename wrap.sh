@@ -372,16 +372,20 @@ if [ -v NIX_PROFILES ]; then
   OLDIFS=$IFS
   IFS=" "
   for p in ${NIX_PROFILES}; do
-    if [[ -d "$p" ]]; then
-      bwrap_opts+=(--ro-bind "$p" "$p")
-    fi
+    paths_general+=("$p")
   done
   IFS=$OLDIFS
 fi
 
 for p in "${paths_general[@]}"; do
   if [ -d "$p" ]; then
-    bwrap_opts+=(--ro-bind "$p" "$p")
+    destination="$p"
+    # A shared ancestor already supplies host symlinks. Mount their targets
+    # directly: bwrap cannot create mountpoints through those symlinked paths.
+    if [[ $share_cwd -eq 1 && ( "$cwd" == / || "$p" == "$cwd" || "$p" == "$cwd/"* ) ]]; then
+      destination="$(readlink -f -- "$p")"
+    fi
+    bwrap_opts+=(--ro-bind "$p" "$destination")
   fi
 done
 
