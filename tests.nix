@@ -448,6 +448,24 @@ pkgs.nixosTest {
         wrap -p -e SOME_DIR -w "$SOME_DIR" bash -c 'test -d "$SOME_DIR" && echo ok' | grep '^ok$' ||
           (echo 'Unexpected: -w $SOME_DIR does not create directory'; false)
       """))
+
+    with subtest("-- forwards BWRAP_ARGS to bwrap"):
+      machine.succeed(as_alice("""
+        mkdir -p /tmp/bwrap-args-test
+        echo "bwrap-args-content" > /tmp/bwrap-args-test/data
+
+        # BWRAP_ARGS after -- should be honoured as bwrap options
+        wrap -- --ro-bind /tmp/bwrap-args-test /tmp/bwrap-args-test bash -c 'cat /tmp/bwrap-args-test/data' | grep '^bwrap-args-content$' ||
+          (echo 'Unexpected: BWRAP_ARGS not forwarded to bwrap'; false)
+
+        # Bare -- separator should be consumed and not break the command
+        wrap -- bash -c 'echo hi' | grep '^hi$' ||
+          (echo 'Unexpected: -- separator not handled'; false)
+
+        # Wrap options combined with -- and BWRAP_ARGS
+        wrap -p -- --ro-bind /tmp/bwrap-args-test /tmp/bwrap-args-test bash -c 'cat /tmp/bwrap-args-test/data' | grep '^bwrap-args-content$' ||
+          (echo 'Unexpected: -p with BWRAP_ARGS failed'; false)
+      """))
   '';
 }
 
