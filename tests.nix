@@ -204,6 +204,22 @@ pkgs.nixosTest {
           (echo 'Unexpected: custom .Xauthority is not visible in sandbox'; false)
       """))
 
+    with subtest("-d exposes custom absolute path Xauthority file in sandbox"):
+      machine.succeed(as_alice("""
+        # create mock home
+        export HOME=/tmp/home
+        mkdir -p $HOME
+
+        # create mock custom Xauthority file
+        touch $HOME/myxauthfile
+        echo "mysecret" > $HOME/myxauthfile
+        export XAUTHORITY=$HOME/myxauthfile
+
+        # ensure custom Xauthority file exists in sandbox
+        wrap -d bash -c 'cat $HOME/.Xauthority' | grep '^mysecret$' ||
+          (echo 'Unexpected: custom .Xauthority is not visible in sandbox'; false)
+      """))
+
     with subtest("-r exposes path readonly"):
       machine.succeed(as_alice("""
         # create some test file

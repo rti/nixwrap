@@ -221,15 +221,24 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
       if [ -d "/tmp/.X11-unix" ]; then
         bwrap_opts+=(--ro-bind "/tmp/.X11-unix" "/tmp/.X11-unix")
       fi
+    fi
 
-      # Bind the .Xauthority file so that the authorization data is available.
-      if [ -n "${XAUTHORITY:-}" ]; then
-        # Bind a custom path Xauthority file to the standard path in the sandbox
-        bwrap_opts+=(--ro-bind "${XAUTHORITY}" "$HOME/.Xauthority")
-      elif [ -f "$HOME/.Xauthority" ]; then
-        # Bind the standard path Xauthority file to the sandbox
-        bwrap_opts+=(--ro-bind "$HOME/.Xauthority" "$HOME/.Xauthority")
+    # Bind the .Xauthority file so that the authorization data is available.
+    # Intentionally outside DISPLAY check so `wrap -d` exposes auth data even
+    # without DISPLAY set.
+    if [ -n "${XAUTHORITY:-}" ]; then
+      # XAUTHORITY may be absolute or relative to $HOME (e.g. `myxauthfile`)
+      if [[ "$XAUTHORITY" = /* ]]; then
+        xauth_src="$XAUTHORITY"
+      else
+        xauth_src="$HOME/$XAUTHORITY"
       fi
+      # Bind a custom path Xauthority file to the standard path in the sandbox
+      bwrap_opts+=(--ro-bind-try "$xauth_src" "$HOME/.Xauthority")
+      unset xauth_src
+    elif [ -f "$HOME/.Xauthority" ]; then
+      # Bind the standard path Xauthority file to the sandbox
+      bwrap_opts+=(--ro-bind-try "$HOME/.Xauthority" "$HOME/.Xauthority")
     fi
 
     if [ -d /dev/dri ]; then
