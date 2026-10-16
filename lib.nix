@@ -13,6 +13,7 @@
       postBuild = ''
         mv $out/bin/${executable}{,-nowrap}
         cat << _EOF > $out/bin/${executable}
+        #!/usr/bin/env bash
         exec ${pkgs.lib.getExe wrapPkg} ${wrapArgs} ${package}/bin/${executable} "\$@"
         _EOF
         chmod a+x $out/bin/${executable}
