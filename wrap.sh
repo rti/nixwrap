@@ -225,7 +225,7 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
       # Bind the .Xauthority file so that the authorization data is available.
       if [ -n "${XAUTHORITY:-}" ]; then
         # Bind a custom path Xauthority file to the standard path in the sandbox
-        bwrap_opts+=(--ro-bind "${HOME}/${XAUTHORITY}" "$HOME/.Xauthority")
+        bwrap_opts+=(--ro-bind "${XAUTHORITY}" "$HOME/.Xauthority")
       elif [ -f "$HOME/.Xauthority" ]; then
         # Bind the standard path Xauthority file to the sandbox
         bwrap_opts+=(--ro-bind "$HOME/.Xauthority" "$HOME/.Xauthority")
