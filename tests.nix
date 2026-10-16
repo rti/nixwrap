@@ -1,4 +1,4 @@
-{ pkgs, wrap }:
+{ pkgs, wrap, mkWrap }:
 
 pkgs.nixosTest {
   name = "mytest";
@@ -6,7 +6,25 @@ pkgs.nixosTest {
   nodes.machine = { config, pkgs, ... }: {
     system.stateVersion = "24.05";
     networking.dhcpcd.enable = false; # boots faster
-    environment.systemPackages = [ wrap ];
+    environment.systemPackages = [
+      wrap
+      (mkWrap {
+        name = "profile-test";
+        package = pkgs.bash;
+      })
+      (mkWrap {
+        name = "profile-test-persistent";
+        package = pkgs.bash;
+        home = "~/profile-test-home";
+      })
+      (mkWrap {
+        name = "profile-test-cwd";
+        package = pkgs.bash;
+        shareCwd = true;
+        mounts.readOnly = [ "~/profile config" ];
+        mounts.writable = [ "~/profile data" ];
+      })
+    ];
 
     users.users.alice = {
       isNormalUser = true;
@@ -452,6 +470,35 @@ pkgs.nixosTest {
           touch "$HOME/file"
         '
         test -e "/tmp/nixwrap home/file"
+      """))
+
+    with subtest("mkWrap leaves the default home isolated without persisting writes"):
+      machine.succeed(as_alice("""
+        echo host-only > "$HOME/profile-host-marker"
+        profile-test -c 'test "$HOME" = /home/alice && test "$PWD" = "$HOME" && test ! -e "$HOME/profile-host-marker" && touch "$HOME/profile-sandbox-marker"'
+        test ! -e "$HOME/profile-sandbox-marker"
+      """))
+
+    with subtest("mkWrap keeps data at an explicitly configured home path"):
+      machine.succeed(as_alice("""
+        profile-test-persistent -c 'test "$HOME" = /home/alice/profile-test-home && touch "$HOME/profile-marker"'
+        test -e /home/alice/profile-test-home/profile-marker
+      """))
+
+    with subtest("mkWrap resolves ~/ at launch and shares cwd when enabled"):
+      machine.succeed(as_alice("""
+        export HOME="/tmp/runtime home"
+        mkdir -p "$HOME/project" "$HOME/profile config"
+        echo config-data > "$HOME/profile config/marker"
+        cd "$HOME/project"
+        profile-test-cwd -ec '
+          test "$PWD" = "$HOME/project"
+          test "$(cat "$HOME/profile config/marker")" = config-data
+          ! touch "$HOME/profile config/new-file"
+          touch cwd-marker "$HOME/profile data/marker"
+        '
+        test -e cwd-marker
+        test -e "$HOME/profile data/marker"
       """))
   '';
 }

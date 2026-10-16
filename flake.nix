@@ -34,6 +34,7 @@
         checks.default = import ./tests.nix {
           inherit pkgs;
           inherit (packages) wrap;
+          inherit (lib) mkWrap;
         };
 
       }

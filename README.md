@@ -8,7 +8,7 @@ The goal of Nixwrap is to make sandboxing easy to use for common use cases, redu
 
 ## Examples
 
-### npm install
+### Imperative npm install
 
 > You need to run `npm install` on a project, but you cannot trust all its dependencies.
 
@@ -18,7 +18,7 @@ To run `npm install` only with write access to the current working directory and
 wrap -n npm install
 ```
 
-### GUI Application using nix3-run
+### Imperative GUI Application using nix3-run
 
 > You need to run a GUI application, but you want to limit access to your filesystem and environment variables.
 
@@ -28,7 +28,7 @@ To run vscodium using `nix3-run` with network and display access, only writing t
 wrap -n -d -p -w $HOME/some-dir nix run nixpkgs#vscodium
 ```
 
-### Python tool
+### Imperative Python tool
 
 > You need to run a `python` script that has access to your audio hardware.
 
@@ -38,9 +38,46 @@ Run a python script with Pulse Audio and Pipewire access, but not sharing the cu
 wrap -a -p python my-tool.py
 ```
 
-## How to use
+### Declarative Opencode
 
-By default, Nixwrap will:
+> You want to run your opencode agent with access to the current working directory.
+
+Use `wrap.lib.${system}.mkWrap` to build a wrapped launcher, allow current working directory access, opencode config and cache directory access as well as network access.
+
+```nix
+{
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+  inputs.flake-utils.url = "github:numtide/flake-utils";
+  inputs.wrap.url = "github:rti/nixwrap";
+
+  outputs = { nixpkgs, flake-utils, wrap, ... }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in {
+        packages.default = wrap.lib.${system}.mkWrap {
+          name = "opencode";
+          package = pkgs.opencode;
+          shareCwd = true;
+          capabilities.network = true;
+          mounts = {
+            readOnly = [ "~/.config/opencode" ];
+            writable = [ "~/.local/share/opencode" ];
+          };
+        };
+      });
+}
+```
+
+From the project directory, run:
+
+```sh
+nix run .
+```
+
+## How to use imperatively
+
+By default, the imperative `wrap` command will:
 
 - ✅ Prevent network access. (Use `-n` to allow.)
 - ✅ Prevent access to Wayland and X. (Use `-d` (desktop) to allow.)
@@ -54,11 +91,11 @@ By default, Nixwrap will:
 - ❗ **Allow** read only access to [common bin and lib paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L97).
 - ❗ **Allow** access to a set of [common environment variables](https://github.com/rti/nixwrap/blob/main/wrap.sh#L9).
 
-#### General syntax:
+### General syntax:
 
 `wrap [OPTIONS] [-- BWRAP_ARGS] PROGRAM_TO_WRAP_WITH_ARGS`
 
-#### Options
+### Options
 
 ```
   -d       Allow Desktop access, Wayland, X11, and rendering hardware.
@@ -74,7 +111,7 @@ By default, Nixwrap will:
   -v       Verbose output for debugging.
 ```
 
-#### Advanced Options
+### Advanced Options
 
 ```
   -p       Do not share current working directory. By default wrap will share
@@ -93,72 +130,25 @@ By default, Nixwrap will:
            (man bwrap(1)) to unshare manually.
 ```
 
-### Wrap binaries via Nix
+## How to use declaratively
 
-#### Flake
+The `lib.mkWrap` function takes the following arguments.
 
-Add the Nixwrap flake as an input in your flake.
+| Argument | Description |
+| --- | --- |
+| `name` | Name of the generated launcher. Required. |
+| `package` | Package containing the executable. Required. |
+| `executable` | Executable under the package's `bin` directory. Defaults to `package.pname`. |
+| `arguments` | Fixed arguments before those supplied at launch. Defaults to `[]`. |
+| `home` | Host directory to create if needed and mount as the writable sandbox home. Omit to keep the default isolated home. |
+| `shareCwd` | Share and start in the launch-time working directory, subject to wrap's protected-path rules. Defaults to `false`. |
+| `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
+| `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
+| `capabilities` | Boolean attributes: `network`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. |
+| `environment` | Attribute set of variables to set explicitly. Defaults to `{}`. Set `home`, not `environment.HOME`, to change the sandbox home. |
 
-```nix
-{
-  inputs = {
-    wrap.url = "github:rti/nixwrap";
-  };
 
-  # outputs ...
-}
-```
-
-#### Wrap a package
-
-To wrap a package, use the function from `inputs.wrap.lib.wrap`. It takes the following arguments:
-
-- `package` The package to wrap.
-- `executable` The name of the executable, optional, defaults to package name.
-- `wrapArgs` Arguments to wrap, see above.
-
-The function returns a new package wrapping the given package.
-
-E.g. to wrap `nodejs` with access to current working directory (default) and additional network access, do:
-
-```nix
-inputs.wrap.lib.wrap {
-  package = pkgs.nodejs;
-  executable = "node";
-  wrapArgs = "-n";
-}
-```
-
-#### Flake devShell with wrapped `nodejs`
-
-This example installs `nodejs` in a devShell, but wraps `node` with Nixwrap, so what it can only access the current working directory and the network.
-
-```nix
-{
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
-  inputs.wrap.url = "github:rti/nixwrap";
-
-  outputs = { nixpkgs, wrap, ... } @inputs:
-    inputs.flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
-      in
-      {
-        devShells.default = pkgs.mkShell {
-          buildInputs = [
-            (wrap.lib.${system}.wrap {
-              package = pkgs.nodejs;
-              executable = "node";
-              wrapArgs = "-n";
-            })
-          ];
-        };
-      }
-    );
-}
-```
+Paths in `home`, `mounts.readOnly`, and `mounts.writable` may begin with `~/`; the launcher resolves that prefix against the caller's `HOME` at runtime. The rest of the path stays literal: shell variables, globs, and commands are not expanded.
 
 ## Supported platforms
 
