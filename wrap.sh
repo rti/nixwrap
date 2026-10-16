@@ -336,7 +336,7 @@ cwd="$(pwd)"
 bwrap_chdir="$HOME"
 
 if [[ $unshare_all -eq 1 ]]; then
-  bwrap_opts+=(--unshare-all "${bwrap_opts[@]}")
+  bwrap_opts=(--unshare-all "${bwrap_opts[@]}")
 fi
 
 # Check for paths we do not want to share implicitly if we are not forced to
