@@ -172,3 +172,4 @@ Nixwrap is at the moment tested exclusively on NixOS, even though the concept sh
 
 - https://git.sr.ht/~fgaz/nix-bubblewrap
 - https://github.com/Frontear/nix-wrap
+- https://codeberg.org/decentstates/nix-housing
