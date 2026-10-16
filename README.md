@@ -70,6 +70,7 @@ By default, Nixwrap will:
   -e VAR   Allow env var VAR access.
   -r PATH  Mount PATH into sandbox in read-only mode.
   -w PATH  Mount PATH into sandbox in read write mode.
+  -H PATH  Set and writable-mount the sandbox HOME path.
   -v       Verbose output for debugging.
 ```
 
@@ -79,12 +80,12 @@ By default, Nixwrap will:
   -p       Do not share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it
            before running the program. With this option, wrap will not share
-           the directory and leave the current directory untouched.
+           the directory and will start in HOME instead. Takes precedence over -f.
   -f       Force share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it only
-           if the directory does not match any of the following patterns:
-           ^/$, ^/home$, ^\${HOME}$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
-           This option will bypass the check and share the directory regardless.
+           if it is not the caller's home and does not match these patterns:
+           ^/$, ^/home$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
+           This option bypasses that check, but does not override -p.
   -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts
            and tries to unshare (continue on failues) user and cgroup
            namespaces. With this option, wrap does not automatically unshare

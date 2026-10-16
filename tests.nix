@@ -220,6 +220,25 @@ pkgs.nixosTest {
           (echo 'Unexpected: custom .Xauthority is not visible in sandbox'; false)
       """))
 
+    with subtest("-d uses host authentication regardless of -H order"):
+      machine.succeed(as_alice("""
+        export HOME=/tmp/desktop-host XAUTHORITY=auth
+        sandbox_home="/tmp/desktop home"
+        mkdir -p "$HOME" "$sandbox_home"
+        echo host-auth > "$HOME/auth"
+        echo sandbox-auth > "$sandbox_home/.Xauthority"
+
+        wrap -p -H "$sandbox_home" -d bash -ec '
+          test "$(cat "$HOME/.Xauthority")" = host-auth
+          ! (echo overwritten > "$HOME/.Xauthority")
+        '
+        wrap -p -d -H /tmp/other-home -H "$sandbox_home" bash -ec '
+          test "$(cat "$HOME/.Xauthority")" = host-auth
+        '
+        test "$(cat "$HOME/auth")" = host-auth
+        test "$(cat "$sandbox_home/.Xauthority")" = sandbox-auth
+      """))
+
     with subtest("-r exposes path readonly"):
       machine.succeed(as_alice("""
         # create some test file
@@ -254,95 +273,52 @@ pkgs.nixosTest {
           (echo 'Unexpected: Did not get expected output when reading freshly written file'; false)
       """))
 
-    with subtest("cwd is exposed by default"):
+    with subtest("shared cwd wins; -p selects home even with -f"):
       machine.succeed(as_alice("""
-        mkdir -p /tmp/some-dir
-        cd /tmp/some-dir
-        echo "file-content" > test-file
-
-        # Expect cat to succeed inside sandbox
-        wrap bash -c 'cat test-file' | grep '^file-content$' ||
-          (echo 'Unexpected: cwd not exposed by default'; false)
+        export HOME=/tmp/cwd-home
+        mkdir -p "$HOME/project"
+        cd "$HOME/project"
+        wrap bash -ec 'test "$PWD" = "$HOME/project"; touch cwd-marker'
+        test -e cwd-marker
+        for flags in -p -pf -fp; do
+          wrap "$flags" bash -ec 'test "$PWD" = "$HOME"; test ! -e "$HOME/project/cwd-marker"'
+        done
+        wrap -H /tmp/cwd-custom-home bash -ec '
+          test "$HOME" = /tmp/cwd-custom-home
+          test "$PWD" = /tmp/cwd-home/project
+        '
       """))
 
-    with subtest("-p does not expose cwd"):
+    with subtest("home and protected-path aliases are not shared without -f"):
       machine.succeed(as_alice("""
-        mkdir -p /tmp/some-dir
-        cd /tmp/some-dir
-        echo "file-content" > test-file
-
-        # Expect cat to fail inside sandbox when -p is used
-        wrap -p bash -c 'cat test-file; echo $?' | grep '^1$' ||
-          (echo 'Unexpected: cwd exposed when using -p'; false)
+        export HOME="/tmp/protected-home[1]/"
+        mkdir -p "$HOME"
+        touch "$HOME/host-marker"
+        cd "$HOME"
+        wrap bash -ec 'test ! -e "$HOME/host-marker"'
+        wrap -f bash -ec 'test -e "$HOME/host-marker"'
+        wrap -H /tmp/another-home bash -ec 'test "$PWD" = "$HOME"; test ! -e "/tmp/protected-home[1]/host-marker"'
+        ln -s "$HOME" /tmp/home-alias
+        cd /tmp/home-alias
+        wrap bash -ec 'test ! -e "$HOME/host-marker"'
+        ln -s /etc /tmp/etc-alias
+        cd /tmp/etc-alias
+        wrap bash -ec 'test . -ef "$HOME"; test ! -e /etc/passwd'
       """))
 
-    with subtest("-p cds to $HOME"):
+    with subtest("forced root sharing and symlinked read-only profiles work"):
       machine.succeed(as_alice("""
-        mkdir -p /tmp/new-home
-        export HOME=/tmp/new-home
-        mkdir -p /tmp/new-home/some-dir
-        cd /tmp/new-home/some-dir
-
-        # Expect pwd to return $HOME in sandbox
-        wrap -p bash -c 'pwd' | grep '^/tmp/new-home$' ||
-          (echo 'Unexpected: -p did not change cwd to $HOME as expected'; false)
-
-        # Expect this home dir to be empty
-        wrap -p bash -c 'ls -l $HOME' | grep '^total 0$' ||
-          (echo 'Unexpected: Sandbox $HOME is not empty'; false)
-      """))
-
-    with subtest("$HOME as cwd is not shared implicitly"):
-      machine.succeed(as_alice("""
-        # setup prerequisites
-        mkdir -p /tmp/new-home
-        export HOME=/tmp/new-home
-        touch /tmp/new-home/something-in-home
-        cd $HOME
-
-        # expect cwd to still be $HOME
-        wrap bash -c 'pwd' | grep '^/tmp/new-home$' ||
-          (echo 'Unexpected: Cwd in sandbox is not $HOME'; false)
-
-        # expect $HOME to be empty
-        wrap bash -c 'ls -l $HOME' | grep '^total 0$' ||
-          (echo 'Unexpected: Sandbox $HOME is not empty'; false)
-      """))
-
-    with subtest("/etc as cwd is not shared implicitly"):
-      machine.succeed("""
-        touch /etc/something-in-etc
-      """)
-      machine.succeed(as_alice("""
-        # setup prerequisites
-        export HOME=/tmp/new-home
-        mkdir -p /tmp/new-home
-        cd /etc
-
-        # expect cwd to still be $HOME
-        wrap bash -c 'pwd' | grep '^/tmp/new-home$' ||
-          (echo 'Unexpected: Cwd in sandbox is not $HOME'; false)
-
-        # expect /etc to not contain file from outside sandbox
-        ! (wrap bash -c 'ls /etc/something-in-etc' | grep '^something-in-etc$') ||
-          (echo 'Unexpected: Sandbox /etc contains file from outside sandbox'; false)
-      """))
-
-    with subtest("-f forces sharing HOME as cwd"):
-      machine.succeed(as_alice("""
-        # setup prerequisites
-        mkdir -p /tmp/new-home
-        export HOME=/tmp/new-home
-        touch /tmp/new-home/something-in-home
-        cd $HOME
-
-        # expect cwd to be $HOME
-        wrap -f bash -c 'pwd' | grep '^/tmp/new-home$' ||
-          (echo 'Unexpected: Cwd in sandbox is not $HOME'; false)
-
-        # expect file in $HOME
-        wrap -f bash -c 'ls $HOME' | grep '^something-in-home$' ||
-          (echo 'Unexpected: Sandbox $HOME is empty'; false)
+        cd /
+        wrap -f bash -ec 'test "$PWD" = /'
+        mkdir -p /tmp/profile-project /tmp/profile-target
+        echo profile-data > /tmp/profile-target/marker
+        cd /tmp/profile-project
+        ln -s /tmp/profile-target profile-link
+        NIX_PROFILES="$NIX_PROFILES $PWD/profile-link" wrap bash -ec '
+          test "$(cat profile-link/marker)" = profile-data
+          ! touch profile-link/write-marker
+        '
+        test ! -e /tmp/profile-target/write-marker
       """))
 
     with subtest("Network files are available only with -n"):
@@ -465,6 +441,17 @@ pkgs.nixosTest {
         # Wrap options combined with -- and BWRAP_ARGS
         wrap -p -- --ro-bind /tmp/bwrap-args-test /tmp/bwrap-args-test bash -c 'cat /tmp/bwrap-args-test/data' | grep '^bwrap-args-content$' ||
           (echo 'Unexpected: -p with BWRAP_ARGS failed'; false)
+      """))
+
+    with subtest("-p -H starts in a writable home and persists data"):
+      machine.succeed(as_alice("""
+        cd /tmp
+        wrap -p -H "nixwrap home" bash -ec '
+          test "$HOME" = "/tmp/nixwrap home"
+          test "$PWD" = "$HOME"
+          touch "$HOME/file"
+        '
+        test -e "/tmp/nixwrap home/file"
       """))
   '';
 }

@@ -8,7 +8,6 @@ bwrap_opts=()
 # for usability and convenience
 env_vars=(
   EDITOR
-  HOME
   INFOPATH
   LD_LIBRARY_PATH
   LIBEXEC_PATH
@@ -105,7 +104,6 @@ paths_general=(
 paths_disallowed_from_share_cwd=(
   "^/$"
   "^/home$"
-  "^${HOME}$"
 
   "^/boot"
   "^/etc"
@@ -137,18 +135,19 @@ OPTIONS:
   -e VAR   Allow env var VAR access.
   -r PATH  Mount PATH into sandbox in read-only mode.
   -w PATH  Mount PATH into sandbox in read write mode.
+  -H PATH  Set and writable-mount the sandbox HOME path.
   -v       Verbose output for debugging.
 
 ADVANCED OPTIONS:
   -p       Do not share current working directory. By default wrap will share 
            the current working directory as a write mount and cd into it 
-           before running the program. With this option, wrap will not share 
-           the directory and leave the current directory untouched.
+           before running the program. With this option, wrap will not share
+           the directory and will start in HOME instead. Takes precedence over -f.
   -f       Force share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it only
-           if the directory does not match any of the following patterns: 
-           ^/$, ^/home$, ^\${HOME}$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
-           This option will bypass the check and share the directory regardless. 
+           if it is not the caller's home and does not match these patterns:
+           ^/$, ^/home$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
+           This option bypasses that check, but does not override -p.
   -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
            and tries to unshare (continue on failures) user and cgroup 
            namespaces. With this option, wrap does not automatically unshare 
@@ -173,10 +172,11 @@ fi
 unshare_all=1
 share_cwd=1
 force_share_cwd=0
+sandbox_home="$HOME"
+xauth_src=""
 
-while getopts "r:w:e:abcdfhmnpuv" opt; do
+while getopts "r:w:e:H:abcdfhmnpuv" opt; do
   case "$opt" in
-
   # bind / mount a path readonly in sandbox to the same path as host
   r)
     # Create a directory if the path does not exist
@@ -185,6 +185,11 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
     bwrap_opts+=(--ro-bind "$OPTARG" "$OPTARG")
     ;;
 
+  # select the sandbox home, then mount it like any other writable path
+  H)
+    [[ "$OPTARG" = /* ]] || OPTARG="$PWD/$OPTARG"
+    sandbox_home="$OPTARG"
+    ;&
   # bind / mount a path read/write in sandbox to the same path as host
   w)
     # Create a directory if the path does not exist
@@ -233,12 +238,8 @@ while getopts "r:w:e:abcdfhmnpuv" opt; do
       else
         xauth_src="$HOME/$XAUTHORITY"
       fi
-      # Bind a custom path Xauthority file to the standard path in the sandbox
-      bwrap_opts+=(--ro-bind-try "$xauth_src" "$HOME/.Xauthority")
-      unset xauth_src
     elif [ -f "$HOME/.Xauthority" ]; then
-      # Bind the standard path Xauthority file to the sandbox
-      bwrap_opts+=(--ro-bind-try "$HOME/.Xauthority" "$HOME/.Xauthority")
+      xauth_src="$HOME/.Xauthority"
     fi
 
     if [ -d /dev/dri ]; then
@@ -338,11 +339,11 @@ done
 # Shift off the options and optional -- off $@.
 shift $((OPTIND - 1))
 
-# Get the current working directory
-cwd="$(pwd)"
+# Resolve symlinks before checking whether the working directory may be shared.
+cwd="$(pwd -P)"
 
 # The directory to change to after launching the sandbox
-bwrap_chdir="$HOME"
+bwrap_chdir="$sandbox_home"
 
 if [[ $unshare_all -eq 1 ]]; then
   bwrap_opts=(--unshare-all "${bwrap_opts[@]}")
@@ -350,6 +351,9 @@ fi
 
 # Check for paths we do not want to share implicitly if we are not forced to
 if [[ $force_share_cwd -eq 0 ]]; then
+  if [[ "$cwd" -ef "$HOME" ]]; then
+    share_cwd=0
+  fi
   for p in "${paths_disallowed_from_share_cwd[@]}"; do
     if [[ "$cwd" =~ $p ]]; then
       # Disable current working directory sharing if pattern matches
@@ -381,19 +385,25 @@ for p in "${paths_general[@]}"; do
   fi
 done
 
+# Desktop sources use the host HOME; mount auth after any sandbox-home binds.
+if [[ -n "$xauth_src" ]]; then
+  bwrap_opts+=(--ro-bind-try "$xauth_src" "$sandbox_home/.Xauthority")
+fi
+
 for e in "${env_vars[@]}"; do
   if [ -v "$e" ]; then
     bwrap_opts+=(--setenv "$e" "${!e}")
   fi
 done
+bwrap_opts+=(--setenv HOME "$sandbox_home")
 
 exec bwrap \
-  --chdir "$bwrap_chdir" \
   --clearenv \
   --dev /dev \
   --proc /proc \
   --tmpfs /tmp \
   --bind "$TMPDIR" "$TMPDIR" \
-  --dir "$HOME" \
+  --dir "$sandbox_home" \
   "${bwrap_opts[@]}" \
+  --chdir "$bwrap_chdir" \
   "$@"
