@@ -291,6 +291,35 @@ pkgs.nixosTest {
           (echo 'Unexpected: Did not get expected output when reading freshly written file'; false)
       """))
 
+    with subtest("-H relocates explicit HOME mounts"):
+      machine.succeed(as_alice("""
+        export HOME="/tmp/mount-host[1]"
+        mkdir -p "/tmp/mount-host[1]/read config" "/tmp/mount-host[1]/write data" "/tmp/mount-host[1]-other"
+        echo host-config > "/tmp/mount-host[1]/read config/value"
+        echo outside-home > "/tmp/mount-host[1]-other/value"
+        wrap -p -H "/tmp/mount sandbox" \
+          -r "/tmp/mount-host[1]/read config" \
+          -w "/tmp/mount-host[1]/write data" \
+          -r "/tmp/mount-host[1]-other" bash -ec '
+            test "$HOME" = "/tmp/mount sandbox"
+            test "$(cat "/tmp/mount sandbox/read config/value")" = host-config
+            ! touch "/tmp/mount sandbox/read config/forbidden"
+            echo sandbox-write > "/tmp/mount sandbox/write data/value"
+            test "$(cat "/tmp/mount-host[1]-other/value")" = outside-home
+            test ! -e "/tmp/mount-host[1]/read config/value"
+          '
+        test "$HOME" = "/tmp/mount-host[1]"
+        test "$(cat "/tmp/mount-host[1]/write data/value")" = sandbox-write
+        test ! -e "/tmp/mount sandbox/write data/value"
+        export HOME="/tmp/mount-host[1]/"
+        wrap -p -r "/tmp/mount-host[1]/" -H "/tmp/mount sandbox" bash -ec '
+          test "$HOME" = "/tmp/mount sandbox"
+          test "$(cat "/tmp/mount sandbox/read config/value")" = host-config
+          ! touch "/tmp/mount sandbox/forbidden"
+        '
+        test "$HOME" = "/tmp/mount-host[1]/"
+      """))
+
     with subtest("shared cwd wins; -p selects home even with -f"):
       machine.succeed(as_alice("""
         export HOME=/tmp/cwd-home

@@ -108,6 +108,7 @@ By default, the imperative `wrap` command will:
   -r PATH  Mount PATH into sandbox in read-only mode.
   -w PATH  Mount PATH into sandbox in read write mode.
   -H PATH  Set and writable-mount the sandbox HOME path.
+           Mounts -r/-w paths from host HOME at matching sandbox HOME.
   -v       Verbose output for debugging.
 ```
 
@@ -149,6 +150,7 @@ The `lib.mkWrap` function takes the following arguments.
 
 
 Paths in `home`, `mounts.readOnly`, and `mounts.writable` may begin with `~/`; the launcher resolves that prefix against the caller's `HOME` at runtime. The rest of the path stays literal: shell variables, globs, and commands are not expanded.
+When `home` is set, mounts beneath the caller's `HOME` are relocated beneath the sandbox home.
 
 ## Supported platforms
 

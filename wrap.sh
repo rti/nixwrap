@@ -21,14 +21,7 @@ env_vars=(
   TERMINFO
   TERMINFO_DIRS
 
-  XDG_BIN_HOME
-  XDG_CACHE_HOME
-  XDG_CONFIG_DIRS
-  XDG_CONFIG_HOME
   XDG_CURRENT_DESKTOP
-  XDG_DATA_DIRS
-  XDG_DATA_HOME
-  XDG_DESKTOP_PORTAL_DIR
   XDG_RUNTIME_DIR
   XDG_SEAT
   XDG_SESSION_CLASS
@@ -136,6 +129,7 @@ OPTIONS:
   -r PATH  Mount PATH into sandbox in read-only mode.
   -w PATH  Mount PATH into sandbox in read write mode.
   -H PATH  Set and writable-mount the sandbox HOME path.
+           Mounts -r/-w paths from host HOME at matching sandbox HOME.
   -v       Verbose output for debugging.
 
 ADVANCED OPTIONS:
@@ -173,28 +167,35 @@ unshare_all=1
 share_cwd=1
 force_share_cwd=0
 sandbox_home="$HOME"
+mount_opts=()
 xauth_src=""
 
 while getopts "r:w:e:H:abcdfhmnpuv" opt; do
   case "$opt" in
-  # bind / mount a path readonly in sandbox to the same path as host
+
+  # bind / mount a path readonly in sandbox.
+  # queue explicit mounts until the final sandbox home is known.
   r)
     # Create a directory if the path does not exist
     [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
 
-    bwrap_opts+=(--ro-bind "$OPTARG" "$OPTARG")
+    mount_opts+=(--ro-bind "$OPTARG" "$OPTARG")
     ;;
 
-  # select the sandbox home, then mount it like any other writable path
-  H)
-    [[ "$OPTARG" = /* ]] || OPTARG="$PWD/$OPTARG"
-    sandbox_home="$OPTARG"
-    ;&
-  # bind / mount a path read/write in sandbox to the same path as host
+  # bind / mount a path read/write in sandbox.
+  # queue explicit mounts until the final sandbox home is known.
   w)
     # Create a directory if the path does not exist
     [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
 
+    mount_opts+=(--bind "$OPTARG" "$OPTARG")
+    ;;
+
+  # Mount the sandbox home before explicit mounts into it.
+  H)
+    [[ "$OPTARG" = /* ]] || OPTARG="$PWD/$OPTARG"
+    sandbox_home="$OPTARG"
+    [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
     bwrap_opts+=(--bind "$OPTARG" "$OPTARG")
     ;;
 
@@ -338,6 +339,20 @@ done
 
 # Shift off the options and optional -- off $@.
 shift $((OPTIND - 1))
+
+# Keep host sources unchanged, but relocate explicit HOME mounts in the sandbox.
+if [[ "$sandbox_home" != "$HOME" ]]; then
+  host_home="${HOME%/}"
+  for ((i = 0; i < ${#mount_opts[@]}; i += 3)); do
+    source="${mount_opts[i + 1]}"
+    if [[ "$source" == "$HOME" || "$source" == "$host_home" ]]; then
+      mount_opts[i + 2]="$sandbox_home"
+    elif [[ "$source" == "$host_home/"* ]]; then
+      mount_opts[i + 2]="${sandbox_home%/}/${source#"$host_home/"}"
+    fi
+  done
+fi
+bwrap_opts+=("${mount_opts[@]}")
 
 # Resolve symlinks before checking whether the working directory may be shared.
 cwd="$(pwd -P)"
