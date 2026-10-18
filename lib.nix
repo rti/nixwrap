@@ -58,7 +58,7 @@
         ++ pkgs.lib.optional (home != null) "-H ${escapePath home}";
       environmentSetup = builtins.concatStringsSep "\n" (
         map (key: "export ${key}=${pkgs.lib.escapeShellArg (toString environment.${key})}")
-          (builtins.attrNames environment)
+          (builtins.filter (key: environment.${key} != null) (builtins.attrNames environment))
       );
       command = pkgs.lib.escapeShellArgs ([ "${package}/bin/${executable}" ] ++ arguments);
     in

@@ -146,7 +146,7 @@ The `lib.mkWrap` function takes the following arguments.
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
 | `capabilities` | Boolean attributes: `network`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. |
-| `environment` | Attribute set of variables to set explicitly. Defaults to `{}`. Set `home`, not `environment.HOME`, to change the sandbox home. |
+| `environment` | Attribute set of variables: a value sets the variable; `null` passes through the caller's value. Defaults to `{}`. Set `home`, not `environment.HOME`, to change the sandbox home. |
 
 
 Paths in `home`, `mounts.readOnly`, and `mounts.writable` may begin with `~/`; the launcher resolves that prefix against the caller's `HOME` at runtime. The rest of the path stays literal: shell variables, globs, and commands are not expanded.

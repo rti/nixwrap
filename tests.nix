@@ -24,6 +24,16 @@ pkgs.nixosTest {
         mounts.readOnly = [ "~/profile config" ];
         mounts.writable = [ "~/profile data" ];
       })
+      (mkWrap {
+        name = "profile-test-environment";
+        package = pkgs.bash;
+        environment = {
+          EXPLICIT = "fixed value $HOME";
+          EMPTY = "";
+          PASSTHROUGH = null;
+          OPTIONAL = null;
+        };
+      })
     ];
 
     users.users.alice = {
@@ -506,6 +516,24 @@ pkgs.nixosTest {
         echo host-only > "$HOME/profile-host-marker"
         profile-test -c 'test "$HOME" = /home/alice && test "$PWD" = "$HOME" && test ! -e "$HOME/profile-host-marker" && touch "$HOME/profile-sandbox-marker"'
         test ! -e "$HOME/profile-sandbox-marker"
+      """))
+
+    with subtest("mkWrap sets explicit values and passes through runtime environment"):
+      machine.succeed(as_alice("""
+        export EXPLICIT=ignored EMPTY=ignored PASSTHROUGH="caller value" SECRET_VAR=hidden
+        unset OPTIONAL
+        profile-test-environment -euc '
+          test "$EXPLICIT" = "fixed value \\$HOME"
+          test "''${EMPTY+x}" = x && test "$EMPTY" = ""
+          test "$PASSTHROUGH" = "caller value"
+          test "''${OPTIONAL+x}" = ""
+          test "''${SECRET_VAR+x}" = ""
+        '
+        export PASSTHROUGH="changed value" OPTIONAL=""
+        profile-test-environment -euc '
+          test "$PASSTHROUGH" = "changed value"
+          test "''${OPTIONAL+x}" = x && test "$OPTIONAL" = ""
+        '
       """))
 
     with subtest("mkWrap keeps data at an explicitly configured home path"):
