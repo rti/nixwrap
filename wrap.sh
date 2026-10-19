@@ -128,15 +128,14 @@ OPTIONS:
   -e VAR   Allow env var VAR access.
   -r PATH  Mount PATH into sandbox in read-only mode.
   -w PATH  Mount PATH into sandbox in read write mode.
-  -H PATH  Set and writable-mount the sandbox HOME path.
-           Mounts -r/-w paths from host HOME at matching sandbox HOME.
+  -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
+           HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
   -v       Verbose output for debugging.
 
 ADVANCED OPTIONS:
   -p       Do not implicitly mount the current working directory writable.
            Takes precedence over -f. The launch directory is preserved if it
            exists inside the sandbox; otherwise bubblewrap falls back to HOME.
-           A launch from the unshared caller HOME starts in the sandbox HOME.
   -f       Force share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it only
            if it is not the caller's home and does not match these patterns:
@@ -166,7 +165,6 @@ fi
 unshare_all=1
 share_cwd=1
 force_share_cwd=0
-sandbox_home="$HOME"
 mount_opts=()
 xauth_src=""
 
@@ -174,7 +172,7 @@ while getopts "r:w:e:H:abcdfhmnpuv" opt; do
   case "$opt" in
 
   # bind / mount a path readonly in sandbox.
-  # queue explicit mounts until the final sandbox home is known.
+  # queue explicit mounts until after persistent home mounts.
   r)
     # Create a directory if the path does not exist
     [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
@@ -183,7 +181,7 @@ while getopts "r:w:e:H:abcdfhmnpuv" opt; do
     ;;
 
   # bind / mount a path read/write in sandbox.
-  # queue explicit mounts until the final sandbox home is known.
+  # queue explicit mounts until after persistent home mounts.
   w)
     # Create a directory if the path does not exist
     [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
@@ -191,12 +189,10 @@ while getopts "r:w:e:H:abcdfhmnpuv" opt; do
     mount_opts+=(--bind "$OPTARG" "$OPTARG")
     ;;
 
-  # Mount the sandbox home before explicit mounts into it.
+  # Mount persistent storage at the caller's HOME before explicit mounts into it.
   H)
-    [[ "$OPTARG" = /* ]] || OPTARG="$PWD/$OPTARG"
-    sandbox_home="$OPTARG"
     [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
-    bwrap_opts+=(--bind "$OPTARG" "$OPTARG")
+    bwrap_opts+=(--bind "$OPTARG" "$HOME")
     ;;
 
   # grant access to camera device
@@ -340,18 +336,6 @@ done
 # Shift off the options and optional -- off $@.
 shift $((OPTIND - 1))
 
-# Keep host sources unchanged, but relocate explicit HOME mounts in the sandbox.
-if [[ "$sandbox_home" != "$HOME" ]]; then
-  host_home="${HOME%/}"
-  for ((i = 0; i < ${#mount_opts[@]}; i += 3)); do
-    source="${mount_opts[i + 1]}"
-    if [[ "$source" == "$HOME" || "$source" == "$host_home" ]]; then
-      mount_opts[i + 2]="$sandbox_home"
-    elif [[ "$source" == "$host_home/"* ]]; then
-      mount_opts[i + 2]="${sandbox_home%/}/${source#"$host_home/"}"
-    fi
-  done
-fi
 bwrap_opts+=("${mount_opts[@]}")
 
 # Resolve symlinks before checking whether the working directory may be shared.
@@ -377,9 +361,6 @@ fi
 
 if [[ $share_cwd -eq 1 ]]; then
   bwrap_opts+=(--bind "$cwd" "$cwd")
-elif [[ "$cwd" -ef "$HOME" ]]; then
-  # A launch from the caller's home should start in the sandbox home.
-  bwrap_opts+=(--chdir "$sandbox_home")
 fi
 
 if [ -v NIX_PROFILES ]; then
@@ -405,7 +386,7 @@ done
 
 # Desktop sources use the host HOME; mount auth after any sandbox-home binds.
 if [[ -n "$xauth_src" ]]; then
-  bwrap_opts+=(--ro-bind-try "$xauth_src" "$sandbox_home/.Xauthority")
+  bwrap_opts+=(--ro-bind-try "$xauth_src" "$HOME/.Xauthority")
 fi
 
 for e in "${env_vars[@]}"; do
@@ -413,7 +394,7 @@ for e in "${env_vars[@]}"; do
     bwrap_opts+=(--setenv "$e" "${!e}")
   fi
 done
-bwrap_opts+=(--setenv HOME "$sandbox_home")
+bwrap_opts+=(--setenv HOME "$HOME")
 
 exec bwrap \
   --clearenv \
@@ -421,6 +402,6 @@ exec bwrap \
   --proc /proc \
   --tmpfs /tmp \
   --bind "$TMPDIR" "$TMPDIR" \
-  --dir "$sandbox_home" \
+  --dir "$HOME" \
   "${bwrap_opts[@]}" \
   "$@"

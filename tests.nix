@@ -301,31 +301,32 @@ pkgs.nixosTest {
           (echo 'Unexpected: Did not get expected output when reading freshly written file'; false)
       """))
 
-    with subtest("-H relocates explicit HOME mounts"):
+    with subtest("-H keeps HOME mount paths stable and isolates unshared contents"):
       machine.succeed(as_alice("""
         export HOME="/tmp/mount-host[1]"
         mkdir -p "/tmp/mount-host[1]/read config" "/tmp/mount-host[1]/write data" "/tmp/mount-host[1]-other"
         echo host-config > "/tmp/mount-host[1]/read config/value"
+        echo host-private > "$HOME/private"
         echo outside-home > "/tmp/mount-host[1]-other/value"
         wrap -p -H "/tmp/mount sandbox" \
           -r "/tmp/mount-host[1]/read config" \
           -w "/tmp/mount-host[1]/write data" \
           -r "/tmp/mount-host[1]-other" bash -ec '
-            test "$HOME" = "/tmp/mount sandbox"
-            test "$(cat "/tmp/mount sandbox/read config/value")" = host-config
-            ! touch "/tmp/mount sandbox/read config/forbidden"
-            echo sandbox-write > "/tmp/mount sandbox/write data/value"
+            test "$HOME" = "/tmp/mount-host[1]"
+            test "$(cat "$HOME/read config/value")" = host-config
+            ! touch "$HOME/read config/forbidden"
+            echo sandbox-write > "$HOME/write data/value"
             test "$(cat "/tmp/mount-host[1]-other/value")" = outside-home
-            test ! -e "/tmp/mount-host[1]/read config/value"
+            test ! -e "$HOME/private"
           '
         test "$HOME" = "/tmp/mount-host[1]"
         test "$(cat "/tmp/mount-host[1]/write data/value")" = sandbox-write
         test ! -e "/tmp/mount sandbox/write data/value"
         export HOME="/tmp/mount-host[1]/"
         wrap -p -r "/tmp/mount-host[1]/" -H "/tmp/mount sandbox" bash -ec '
-          test "$HOME" = "/tmp/mount sandbox"
-          test "$(cat "/tmp/mount sandbox/read config/value")" = host-config
-          ! touch "/tmp/mount sandbox/forbidden"
+          test "$HOME" = "/tmp/mount-host[1]/"
+          test "$(cat "$HOME/read config/value")" = host-config
+          ! touch "$HOME/forbidden"
         '
         test "$HOME" = "/tmp/mount-host[1]/"
       """))
@@ -341,7 +342,7 @@ pkgs.nixosTest {
           wrap "$flags" bash -ec 'test "$PWD" = "$HOME"; test ! -e "$HOME/project/cwd-marker"'
         done
         wrap -H /tmp/cwd-custom-home bash -ec '
-          test "$HOME" = /tmp/cwd-custom-home
+          test "$HOME" = /tmp/cwd-home
           test "$PWD" = /tmp/cwd-home/project
         '
       """))
@@ -365,7 +366,7 @@ pkgs.nixosTest {
         test -e writable-marker
         wrap -p -H /tmp/preserve-cwd-fallback bash -ec '
           test "$PWD" = "$HOME"
-          test "$HOME" = /tmp/preserve-cwd-fallback
+          test "$HOME" = /tmp/preserve-cwd-home
         '
         cd /
         wrap -p bash -ec 'test "$PWD" = /'
@@ -373,26 +374,35 @@ pkgs.nixosTest {
         wrap -p -H "$HOME" bash -ec 'test "$PWD" = "$HOME"'
       """))
 
-    with subtest("unshared caller home starts in sandbox home even when original path exists"):
+    with subtest("persistent home keeps host-visible project cwd across launches"):
       machine.succeed(as_alice("""
-        export HOME=/tmp/home-startup
-        sandbox_home="$HOME/jail"
-        mkdir -p "$sandbox_home"
-        touch "$HOME/host-marker"
-        ln -s "$HOME" /tmp/home-startup-alias
-        cd /tmp/home-startup-alias
-        for flags in "" -p -pf -fp; do
-          wrap $flags -H "$sandbox_home" bash -ec '
-            test -d /tmp/home-startup
-            test "$PWD" = "$HOME"
-            test "$HOME" = /tmp/home-startup/jail
-            test ! -e /tmp/home-startup/host-marker
-          '
-        done
-        wrap -f -H "$sandbox_home" bash -ec '
-          test "$PWD" = /tmp/home-startup
-          test -e host-marker
+        export HOME=/tmp/stable-home
+        storage="$HOME/jail"
+        mkdir -p "$storage" "$HOME/src/nixos"
+        echo host-private > "$HOME/private"
+        echo project-data > "$HOME/src/nixos/marker"
+        ln -s "$HOME" /tmp/stable-home-alias
+        cd /tmp/stable-home-alias
+        wrap -p -H "$storage" -w "$HOME/src" bash -ec '
+          test "$HOME" = /tmp/stable-home
+          test "$PWD" = "$HOME"
+          test ! -e "$HOME/private"
+          touch "$HOME/persistent-marker"
+          cd "$HOME/src/nixos"
+          printf "%s" "$PWD" > "$HOME/reported-cwd"
         '
+        test -e "$storage/persistent-marker"
+        test ! -e "$HOME/persistent-marker"
+        cd "$(cat "$storage/reported-cwd")"
+        wrap -p -H "$storage" -w "$HOME/src" bash -ec '
+          test "$PWD" = "$HOME/src/nixos"
+          test "$(cat marker)" = project-data
+          test -e "$HOME/persistent-marker"
+          touch project-write
+        '
+        test -e project-write
+        cd "$HOME"
+        wrap -f -H "$storage" bash -ec 'test -e private'
       """))
 
     with subtest("home and protected-path aliases are not shared without -f"):
@@ -403,7 +413,7 @@ pkgs.nixosTest {
         cd "$HOME"
         wrap bash -ec 'test ! -e "$HOME/host-marker"'
         wrap -f bash -ec 'test -e "$HOME/host-marker"'
-        wrap -H /tmp/another-home bash -ec 'test "$PWD" = "$HOME"; test ! -e "/tmp/protected-home[1]/host-marker"'
+        wrap -H /tmp/another-home bash -ec 'test . -ef "$HOME"; test ! -e "$HOME/host-marker"'
         ln -s "$HOME" /tmp/home-alias
         cd /tmp/home-alias
         wrap bash -ec 'test ! -e "$HOME/host-marker"'
@@ -553,7 +563,7 @@ pkgs.nixosTest {
       machine.succeed(as_alice("""
         cd /tmp
         wrap -p -H "nixwrap home" bash -ec '
-          test "$HOME" = "/tmp/nixwrap home"
+          test "$HOME" = /home/alice
           test "$PWD" = /tmp
           touch "$HOME/file"
         '
@@ -585,9 +595,9 @@ pkgs.nixosTest {
         '
       """))
 
-    with subtest("mkWrap keeps data at an explicitly configured home path"):
+    with subtest("mkWrap persists home data without changing HOME"):
       machine.succeed(as_alice("""
-        profile-test-persistent -c 'test "$HOME" = /home/alice/profile-test-home && touch "$HOME/profile-marker"'
+        profile-test-persistent -c 'test "$HOME" = /home/alice && touch "$HOME/profile-marker"'
         test -e /home/alice/profile-test-home/profile-marker
       """))
 
