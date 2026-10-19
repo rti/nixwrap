@@ -118,6 +118,7 @@ By default, the imperative `wrap` command will:
   -p       Do not implicitly mount the current working directory writable.
            Takes precedence over -f. The launch directory is preserved if it
            exists inside the sandbox; otherwise bubblewrap falls back to HOME.
+           A launch from the unshared caller HOME starts in the sandbox HOME.
   -f       Force share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it only
            if it is not the caller's home and does not match these patterns:
@@ -141,7 +142,7 @@ The `lib.mkWrap` function takes the following arguments.
 | `executable` | Executable under the package's `bin` directory. Defaults to `package.pname`. |
 | `arguments` | Fixed arguments before those supplied at launch. Defaults to `[]`. |
 | `home` | Host directory to create if needed and mount as the writable sandbox home. Omit to keep the default isolated home. |
-| `shareCwd` | Mount the launch-time working directory writable, subject to wrap's protected-path rules. Defaults to `false`. Startup still preserves the cwd if it exists inside the sandbox. |
+| `shareCwd` | Mount the launch-time working directory writable, subject to wrap's protected-path rules. Defaults to `false`. Startup preserves an available cwd, except that an unshared caller HOME maps to the sandbox HOME. |
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
 | `capabilities` | Boolean attributes: `network`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. |

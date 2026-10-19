@@ -373,6 +373,28 @@ pkgs.nixosTest {
         wrap -p -H "$HOME" bash -ec 'test "$PWD" = "$HOME"'
       """))
 
+    with subtest("unshared caller home starts in sandbox home even when original path exists"):
+      machine.succeed(as_alice("""
+        export HOME=/tmp/home-startup
+        sandbox_home="$HOME/jail"
+        mkdir -p "$sandbox_home"
+        touch "$HOME/host-marker"
+        ln -s "$HOME" /tmp/home-startup-alias
+        cd /tmp/home-startup-alias
+        for flags in "" -p -pf -fp; do
+          wrap $flags -H "$sandbox_home" bash -ec '
+            test -d /tmp/home-startup
+            test "$PWD" = "$HOME"
+            test "$HOME" = /tmp/home-startup/jail
+            test ! -e /tmp/home-startup/host-marker
+          '
+        done
+        wrap -f -H "$sandbox_home" bash -ec '
+          test "$PWD" = /tmp/home-startup
+          test -e host-marker
+        '
+      """))
+
     with subtest("home and protected-path aliases are not shared without -f"):
       machine.succeed(as_alice("""
         export HOME="/tmp/protected-home[1]/"

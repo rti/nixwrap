@@ -136,6 +136,7 @@ ADVANCED OPTIONS:
   -p       Do not implicitly mount the current working directory writable.
            Takes precedence over -f. The launch directory is preserved if it
            exists inside the sandbox; otherwise bubblewrap falls back to HOME.
+           A launch from the unshared caller HOME starts in the sandbox HOME.
   -f       Force share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it only
            if it is not the caller's home and does not match these patterns:
@@ -376,6 +377,9 @@ fi
 
 if [[ $share_cwd -eq 1 ]]; then
   bwrap_opts+=(--bind "$cwd" "$cwd")
+elif [[ "$cwd" -ef "$HOME" ]]; then
+  # A launch from the caller's home should start in the sandbox home.
+  bwrap_opts+=(--chdir "$sandbox_home")
 fi
 
 if [ -v NIX_PROFILES ]; then
