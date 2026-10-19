@@ -133,10 +133,9 @@ OPTIONS:
   -v       Verbose output for debugging.
 
 ADVANCED OPTIONS:
-  -p       Do not share current working directory. By default wrap will share 
-           the current working directory as a write mount and cd into it 
-           before running the program. With this option, wrap will not share
-           the directory and will start in HOME instead. Takes precedence over -f.
+  -p       Do not implicitly mount the current working directory writable.
+           Takes precedence over -f. The launch directory is preserved if it
+           exists inside the sandbox; otherwise bubblewrap falls back to HOME.
   -f       Force share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it only
            if it is not the caller's home and does not match these patterns:
@@ -357,9 +356,6 @@ bwrap_opts+=("${mount_opts[@]}")
 # Resolve symlinks before checking whether the working directory may be shared.
 cwd="$(pwd -P)"
 
-# The directory to change to after launching the sandbox
-bwrap_chdir="$sandbox_home"
-
 if [[ $unshare_all -eq 1 ]]; then
   bwrap_opts=(--unshare-all "${bwrap_opts[@]}")
 fi
@@ -380,7 +376,6 @@ fi
 
 if [[ $share_cwd -eq 1 ]]; then
   bwrap_opts+=(--bind "$cwd" "$cwd")
-  bwrap_chdir="$cwd"
 fi
 
 if [ -v NIX_PROFILES ]; then
@@ -424,5 +419,4 @@ exec bwrap \
   --bind "$TMPDIR" "$TMPDIR" \
   --dir "$sandbox_home" \
   "${bwrap_opts[@]}" \
-  --chdir "$bwrap_chdir" \
   "$@"

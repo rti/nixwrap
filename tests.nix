@@ -330,7 +330,7 @@ pkgs.nixosTest {
         test "$HOME" = "/tmp/mount-host[1]/"
       """))
 
-    with subtest("shared cwd wins; -p selects home even with -f"):
+    with subtest("implicit cwd sharing; -p prevents mounting even with -f"):
       machine.succeed(as_alice("""
         export HOME=/tmp/cwd-home
         mkdir -p "$HOME/project"
@@ -344,6 +344,33 @@ pkgs.nixosTest {
           test "$HOME" = /tmp/cwd-custom-home
           test "$PWD" = /tmp/cwd-home/project
         '
+      """))
+
+    with subtest("cwd is preserved through explicit mounts and falls back when absent"):
+      machine.succeed(as_alice("""
+        export HOME=/tmp/preserve-cwd-home
+        project="/tmp/preserve-cwd-project with spaces"
+        mkdir -p "$HOME" "$project/subdir"
+        echo project-data > "$project/subdir/marker"
+        cd "$project/subdir"
+        wrap -p -r "$project" bash -ec '
+          test "$PWD" = "/tmp/preserve-cwd-project with spaces/subdir"
+          test "$(cat marker)" = project-data
+          ! touch forbidden
+        '
+        wrap -p -w "$project" bash -ec '
+          test "$PWD" = "/tmp/preserve-cwd-project with spaces/subdir"
+          touch writable-marker
+        '
+        test -e writable-marker
+        wrap -p -H /tmp/preserve-cwd-fallback bash -ec '
+          test "$PWD" = "$HOME"
+          test "$HOME" = /tmp/preserve-cwd-fallback
+        '
+        cd /
+        wrap -p bash -ec 'test "$PWD" = /'
+        cd "$HOME"
+        wrap -p -H "$HOME" bash -ec 'test "$PWD" = "$HOME"'
       """))
 
     with subtest("home and protected-path aliases are not shared without -f"):
@@ -360,7 +387,7 @@ pkgs.nixosTest {
         wrap bash -ec 'test ! -e "$HOME/host-marker"'
         ln -s /etc /tmp/etc-alias
         cd /tmp/etc-alias
-        wrap bash -ec 'test . -ef "$HOME"; test ! -e /etc/passwd'
+        wrap bash -ec 'test "$PWD" = /etc; test ! -e /etc/passwd'
       """))
 
     with subtest("forced root sharing and symlinked read-only profiles work"):
@@ -500,12 +527,12 @@ pkgs.nixosTest {
           (echo 'Unexpected: -p with BWRAP_ARGS failed'; false)
       """))
 
-    with subtest("-p -H starts in a writable home and persists data"):
+    with subtest("-p -H preserves available cwd and persists home data"):
       machine.succeed(as_alice("""
         cd /tmp
         wrap -p -H "nixwrap home" bash -ec '
           test "$HOME" = "/tmp/nixwrap home"
-          test "$PWD" = "$HOME"
+          test "$PWD" = /tmp
           touch "$HOME/file"
         '
         test -e "/tmp/nixwrap home/file"
