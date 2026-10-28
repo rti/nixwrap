@@ -27,6 +27,8 @@
       arguments ? [ ],
       home ? null,
       shareCwd ? false,
+      shareStore ? true,
+      closure ? [ ],
       mounts ? { writable = [ ]; readOnly = [ ]; },
       capabilities ? { },
       environment ? { },
@@ -55,6 +57,8 @@
         ++ (map (capability: capabilityFlags.${capability}) enabledCapabilities)
         ++ (map (key: "-e ${pkgs.lib.escapeShellArg key}") (builtins.attrNames environment))
         ++ pkgs.lib.optional (!shareCwd) "-p"
+        ++ pkgs.lib.optionals (!shareStore)
+          (map (path: "-s ${pkgs.lib.escapeShellArg (toString path)}") ([ package ] ++ closure))
         ++ pkgs.lib.optional (home != null) "-H ${escapePath home}";
       environmentSetup = builtins.concatStringsSep "\n" (
         map (key: "export ${key}=${pkgs.lib.escapeShellArg (toString environment.${key})}")
@@ -65,6 +69,7 @@
     assert builtins.all (capability: builtins.hasAttr capability capabilityFlags)
       (builtins.attrNames capabilities);
     assert !(builtins.hasAttr "HOME" environment);
+    assert !shareStore || closure == [ ];
     assert builtins.all
       (key: builtins.match "[A-Za-z_][A-Za-z0-9_]*" key != null)
       (builtins.attrNames environment);

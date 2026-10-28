@@ -13,6 +13,17 @@ pkgs.nixosTest {
         package = pkgs.bash;
       })
       (mkWrap {
+        name = "profile-test-closure";
+        package = pkgs.bash;
+        shareStore = false;
+      })
+      (mkWrap {
+        name = "profile-test-extra-closure";
+        package = pkgs.bash;
+        shareStore = false;
+        closure = [ pkgs.hello ];
+      })
+      (mkWrap {
         name = "profile-test-persistent";
         package = pkgs.bash;
         home = "~/profile-test-home";
@@ -62,6 +73,42 @@ pkgs.nixosTest {
     # as_alice = lambda script: (
     #   f"su --login alice --shell ${pkgs.bash}/bin/bash --command $'{script.replace("'", r"\'")}'"
     # )
+
+    with subtest("Full store sharing remains the default"):
+      machine.succeed(as_alice("""
+        wrap -p ${pkgs.bash}/bin/bash -c 'test -e ${pkgs.hello}/bin/hello'
+        profile-test -c 'test -e ${pkgs.hello}/bin/hello'
+      """))
+
+    with subtest("Only selected closures are available and the store is read-only"):
+      machine.succeed(as_alice("""
+        wrap -p -s ${pkgs.bash} ${pkgs.bash}/bin/bash -c '
+          test -x ${pkgs.bash}/bin/bash
+          test -e ${pkgs.glibc}/lib/libc.so.6
+          test ! -e ${pkgs.hello}/bin/hello
+          test ! -e /nix/var/nix/daemon-socket/socket
+          ! echo forbidden > /nix/store/forbidden
+        '
+        profile-test-closure -c 'test ! -e ${pkgs.hello}/bin/hello'
+      """))
+
+    with subtest("Repeated roots and mkWrap extra closures include dependencies"):
+      machine.succeed(as_alice("""
+        wrap -p -s ${pkgs.bash} -s ${pkgs.hello} ${pkgs.bash}/bin/bash -c '${pkgs.hello}/bin/hello' | grep 'Hello, world!'
+        profile-test-extra-closure -c '${pkgs.hello}/bin/hello' | grep 'Hello, world!'
+        ln -sfn ${pkgs.bash} /home/alice/closure-root
+        wrap -p -s /home/alice/closure-root ${pkgs.bash}/bin/bash -c 'test ! -e ${pkgs.hello}/bin/hello'
+      """))
+
+    with subtest("Invalid closure roots fail instead of sharing the full store"):
+      machine.fail(as_alice("wrap -p -s /home/alice ${pkgs.bash}/bin/bash -c 'exit 0'"))
+      machine.fail(as_alice("wrap -p -s /nix/store/does-not-exist ${pkgs.bash}/bin/bash -c 'exit 0'"))
+
+    with subtest("Shared cwd cannot expose unrelated store entries"):
+      machine.succeed(as_alice("""
+        cd /nix/store
+        wrap -s ${pkgs.bash} ${pkgs.bash}/bin/bash -c 'test ! -e ${pkgs.hello}/bin/hello'
+      """))
 
     with subtest("Environment variable $HOME is always exposed"):
       machine.succeed(as_alice("""

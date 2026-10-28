@@ -109,8 +109,29 @@ By default, the imperative `wrap` command will:
   -w PATH  Mount PATH into sandbox in read write mode.
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
            HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
+  -s PATH  Share only the Nix closure of PATH instead of the whole store.
+           Repeat for additional store paths. By default the whole store is shared.
   -v       Verbose output for debugging.
 ```
+
+### Sharing only a Nix closure
+
+Full store sharing remains the default. Use `-s` with a realized store path
+(or a symlink to one) to expose that path and all its runtime dependencies:
+
+```sh
+wrap -p -s /nix/store/<hash>-hello /nix/store/<hash>-hello/bin/hello
+```
+
+Repeat `-s` to include additional closure roots. Closure mode queries `nix-store`
+on the host before launching; invalid or missing roots abort the launch. It does
+not automatically share `/nix` or `$NIX_PROFILES`, and mounts the selected store
+entries read-only over an empty, read-only `/nix/store`. Invoke the executable
+using its store path, since profile symlinks may no longer resolve. Programs that
+need other packages, locale data, plugins, or desktop drivers may need additional
+roots. Building or installing packages inside this sandbox is not supported.
+Other options still grant their documented access; explicit mounts and raw
+Bubblewrap arguments can widen access beyond the selected closure.
 
 ### Advanced Options
 
@@ -142,6 +163,8 @@ The `lib.mkWrap` function takes the following arguments.
 | `arguments` | Fixed arguments before those supplied at launch. Defaults to `[]`. |
 | `home` | Host backing directory to create if needed and mount writable at the caller's HOME inside the sandbox. The HOME value does not change. Omit to keep the default isolated home. |
 | `shareCwd` | Mount the launch-time working directory writable, subject to wrap's protected-path rules. Defaults to `false`. Startup preserves the cwd if it exists inside the sandbox, otherwise falling back to HOME. |
+| `shareStore` | Share all of `/nix` and profiles. Defaults to `true`. Set to `false` to share only the runtime closure of `package` and any additional `closure` roots. |
+| `closure` | Additional realized store paths or packages to include when `shareStore = false`. Defaults to `[]`; must be empty when sharing the full store. |
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
 | `capabilities` | Boolean attributes: `network`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. |
@@ -149,6 +172,17 @@ The `lib.mkWrap` function takes the following arguments.
 
 
 Paths in `home`, `mounts.readOnly`, and `mounts.writable` may begin with `~/`; the launcher resolves that prefix against the caller's `HOME` at runtime. The rest of the path stays literal: shell variables, globs, and commands are not expanded.
+
+For example, a launcher with Bash and Hello available, without the rest of the store:
+
+```nix
+wrap.lib.${system}.mkWrap {
+  name = "limited-shell";
+  package = pkgs.bash;
+  shareStore = false;
+  closure = [ pkgs.hello ];
+}
+```
 
 ## Supported platforms
 

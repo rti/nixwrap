@@ -82,7 +82,6 @@ env_vars_desktop=(
 
 # paths shared read only by default
 paths_general=(
-  /nix
   /etc/nix
   /etc/static/nix
 
@@ -130,6 +129,8 @@ OPTIONS:
   -w PATH  Mount PATH into sandbox in read write mode.
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
            HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
+  -s PATH  Share only the Nix closure of PATH instead of the whole store.
+           Repeat for additional store paths. By default the whole store is shared.
   -v       Verbose output for debugging.
 
 ADVANCED OPTIONS:
@@ -166,9 +167,10 @@ unshare_all=1
 share_cwd=1
 force_share_cwd=0
 mount_opts=()
+store_roots=()
 xauth_src=""
 
-while getopts "r:w:e:H:abcdfhmnpuv" opt; do
+while getopts "r:w:e:H:s:abcdfhmnpuv" opt; do
   case "$opt" in
 
   # bind / mount a path readonly in sandbox.
@@ -193,6 +195,11 @@ while getopts "r:w:e:H:abcdfhmnpuv" opt; do
   H)
     [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
     bwrap_opts+=(--bind "$OPTARG" "$HOME")
+    ;;
+
+  # Restrict store visibility to the closures of explicitly selected roots.
+  s)
+    store_roots+=("$OPTARG")
     ;;
 
   # grant access to camera device
@@ -363,7 +370,11 @@ if [[ $share_cwd -eq 1 ]]; then
   bwrap_opts+=(--bind "$cwd" "$cwd")
 fi
 
-if [ -v NIX_PROFILES ]; then
+if [[ ${#store_roots[@]} -eq 0 ]]; then
+  paths_general=(/nix "${paths_general[@]}")
+fi
+
+if [[ ${#store_roots[@]} -eq 0 && -v NIX_PROFILES ]]; then
   OLDIFS=$IFS
   IFS=" "
   for p in ${NIX_PROFILES}; do
@@ -383,6 +394,26 @@ for p in "${paths_general[@]}"; do
     bwrap_opts+=(--ro-bind "$p" "$destination")
   fi
 done
+
+# Mount an empty store after other mounts, including a potentially shared cwd.
+# Query outside the sandbox, and fail closed if any root cannot be resolved.
+if [[ ${#store_roots[@]} -gt 0 ]]; then
+  resolved_roots=()
+  for root in "${store_roots[@]}"; do
+    root="$(readlink -f -- "$root")"
+    if [[ ! "$root" =~ ^/nix/store/[^/]+$ ]]; then
+      echo "wrap: closure root must resolve to a Nix store path: $root" >&2
+      exit 1
+    fi
+    resolved_roots+=("$root")
+  done
+  nix-store --query --requisites "${resolved_roots[@]}" > "$TMPDIR/closure"
+  bwrap_opts+=(--tmpfs /nix/store)
+  while IFS= read -r path; do
+    bwrap_opts+=(--ro-bind "$path" "$path")
+  done < "$TMPDIR/closure"
+  bwrap_opts+=(--remount-ro /nix/store)
+fi
 
 # Desktop sources use the host HOME; mount auth after any sandbox-home binds.
 if [[ -n "$xauth_src" ]]; then
