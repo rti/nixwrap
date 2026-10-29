@@ -503,6 +503,29 @@ pkgs.nixosTest {
           (echo 'Unexpected: SECRET_VAR not visible with -e'; false)
       """))
 
+    with subtest("symlinked NIX_PROFILES work with and without a bound ancestor"):
+      machine.succeed("""
+        install -d -o alice /nix/var/nix/profiles/nixwrap-regression-target
+        ln -s nixwrap-regression-target /nix/var/nix/profiles/nixwrap-regression
+      """)
+      machine.succeed(as_alice("""
+        target=/nix/var/nix/profiles/nixwrap-regression-target
+        echo profile-data > "$target/marker"
+        ln -s "$target" "$HOME/regression-profile"
+        export NIX_PROFILES="$NIX_PROFILES /nix/var/nix/profiles/nixwrap-regression $HOME/regression-profile"
+
+        # -p ensures the shared-cwd workaround cannot hide the regression.
+        wrap -p bash -ec '
+          test -L /nix/var/nix/profiles/nixwrap-regression
+          for profile in /nix/var/nix/profiles/nixwrap-regression "$HOME/regression-profile"; do
+            test "$(cat "$profile/marker")" = profile-data
+            ! touch "$profile/write-marker"
+          done
+          /bin/sh -ec "test -d /nix"
+        '
+        test ! -e "$target/write-marker"
+      """))
+
     with subtest("NIX_PROFILES are ro-bound and not writable"):
       machine.succeed("""
         mkdir -p /profile
