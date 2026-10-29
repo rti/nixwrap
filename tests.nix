@@ -1,6 +1,6 @@
 { pkgs, wrap, mkWrap }:
 
-pkgs.nixosTest {
+pkgs.testers.nixosTest {
   name = "mytest";
 
   nodes.machine = { config, pkgs, ... }: {
@@ -11,15 +11,18 @@ pkgs.nixosTest {
       (mkWrap {
         name = "profile-test";
         package = pkgs.bash;
+        executable = "bash";
       })
       (mkWrap {
         name = "profile-test-persistent";
         package = pkgs.bash;
+        executable = "bash";
         home = "~/profile-test-home";
       })
       (mkWrap {
         name = "profile-test-cwd";
         package = pkgs.bash;
+        executable = "bash";
         shareCwd = true;
         mounts.readOnly = [ "~/profile config" ];
         mounts.writable = [ "~/profile data" ];
@@ -27,6 +30,7 @@ pkgs.nixosTest {
       (mkWrap {
         name = "profile-test-environment";
         package = pkgs.bash;
+        executable = "bash";
         environment = {
           EXPLICIT = "fixed value $HOME";
           EMPTY = "";
