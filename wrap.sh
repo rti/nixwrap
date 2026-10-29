@@ -372,30 +372,15 @@ if [ -v NIX_PROFILES ]; then
   IFS=$OLDIFS
 fi
 
-# Paths already mounted into the sandbox. If a previously bound path is an
-# ancestor of the path being mounted, the latter already exists in the
-# sandbox as the host's symlink, and bwrap cannot mount on a symlink
-# destination (e.g. NIX_PROFILES entries such as /nix/var/nix/profiles/default
-# and ~/.nix-profile, supplied by the /nix bind). Mount those at their
-# resolved target instead. Without a bound ancestor bwrap creates the mount
-# point itself, and the literal path must be kept: /bin, /usr/bin, /lib and
-# /lib64 are symlinks on NixOS and are how the sandbox finds basic commands.
-bound_paths=()
-if [[ $share_cwd -eq 1 ]]; then
-  bound_paths+=("$cwd")
-fi
-
 for p in "${paths_general[@]}"; do
   if [ -d "$p" ]; then
     destination="$p"
-    for b in "${bound_paths[@]}"; do
-      if [[ "$b" == / || "$p" == "$b" || "$p" == "$b/"* ]]; then
-        destination="$(readlink -f -- "$p")"
-        break
-      fi
-    done
+    # A shared ancestor already supplies host symlinks. Mount their targets
+    # directly: bwrap cannot create mountpoints through those symlinked paths.
+    if [[ $share_cwd -eq 1 && ( "$cwd" == / || "$p" == "$cwd" || "$p" == "$cwd/"* ) ]]; then
+      destination="$(readlink -f -- "$p")"
+    fi
     bwrap_opts+=(--ro-bind "$p" "$destination")
-    bound_paths+=("$p")
   fi
 done
 
