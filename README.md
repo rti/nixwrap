@@ -167,6 +167,54 @@ Paths in `home`, `mounts.readOnly`, and `mounts.writable` may begin with `~/`; t
 
 Nixwrap is at the moment tested exclusively on NixOS, even though the concept should work in any distribution that ships a current kernel.
 
+## Installation
+
+You need [NixOS](https://nixos.org/download/) with the `nix-command` and `flakes` [experimental features enabled](https://nix.dev/manual/nix/stable/command-ref/conf-file.html#conf-experimental-features).
+
+### Run without installing
+
+```shell
+nix run github:rti/nixwrap -- echo "Hello from the sandbox"
+```
+
+Get usage help:
+
+```shell
+nix run github:rti/nixwrap -- -h
+
+```
+
+### Add to a flake-based NixOS system
+
+Add the `nixwrap` input to your system's `flake.nix` and include its package in `environment.systemPackages`:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixwrap.url = "github:rti/nixwrap";
+    nixwrap.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { nixpkgs, nixwrap, ... }: {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        ({ pkgs, ... }: {
+          nix.settings.experimental-features = [ "nix-command" "flakes" ];
+          environment.systemPackages = [
+            nixwrap.packages.${pkgs.stdenv.hostPlatform.system}.default
+          ];
+        })
+      ];
+    };
+  };
+}
+```
+
+The `wrap` command is then available system-wide.
+
 ## License
 
 `wrap` is licensed under the MIT License. See the LICENSE file for more details.
