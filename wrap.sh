@@ -256,8 +256,15 @@ while getopts "r:w:e:H:abcdfhmnpuv" opt; do
   # grant desktop access (Wayland or X11) and rendering hardware access
   d)
     if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-      # Using Wayland: bind the Wayland display socket
-      bwrap_opts+=(--bind "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
+      # Socket names are relative to XDG_RUNTIME_DIR; absolute paths are not.
+      if [[ "$WAYLAND_DISPLAY" = /* ]]; then
+        wayland_socket="$WAYLAND_DISPLAY"
+      else
+        wayland_socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+      fi
+      if [ -e "$wayland_socket" ]; then
+        bwrap_opts+=(--bind "$wayland_socket" "$wayland_socket")
+      fi
     fi
 
     if [ -n "${DISPLAY:-}" ]; then

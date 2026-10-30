@@ -167,6 +167,30 @@ pkgs.testers.nixosTest {
           (echo 'Unexpected: wayland socket mock does not exist in sandbox'; false)
       """))
 
+    with subtest("-d exposes absolute Wayland paths without prepending XDG_RUNTIME_DIR"):
+      machine.succeed(as_alice("""
+        export XDG_RUNTIME_DIR=/tmp/wayland-runtime
+        export WAYLAND_DISPLAY="/tmp/wayland absolute/wl-0"
+        mkdir -p "$XDG_RUNTIME_DIR" "/tmp/wayland absolute"
+        echo wayland-display > "$WAYLAND_DISPLAY"
+        wrap -d -p bash -c 'cat "$WAYLAND_DISPLAY"' | grep '^wayland-display$'
+      """))
+
+    with subtest("-d skips missing Wayland paths"):
+      machine.succeed(as_alice("""
+        export XDG_RUNTIME_DIR=/tmp/wayland-runtime
+        for display in wl-missing "/tmp/wayland absolute/wl-missing"; do
+          export WAYLAND_DISPLAY="$display"
+          wrap -d -p bash -c '
+            case "$WAYLAND_DISPLAY" in
+              /*) socket="$WAYLAND_DISPLAY" ;;
+              *) socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ;;
+            esac
+            test ! -e "$socket"
+          '
+        done
+      """))
+
     with subtest("Environment variable $DISPLAY is hidden by default"):
       machine.succeed(as_alice("""
         # ensure $DISPLAY is set outside sandbox
