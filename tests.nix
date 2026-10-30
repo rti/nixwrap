@@ -342,6 +342,12 @@ pkgs.testers.nixosTest {
         cd "$HOME/project"
         wrap bash -ec 'test "$PWD" = "$HOME/project"; touch cwd-marker'
         test -e cwd-marker
+        wrap -r "$PWD" bash -ec '
+          test "$PWD" = "$HOME/project"
+          test -f cwd-marker
+          ! touch explicit-readonly-must-win
+        '
+        test ! -e explicit-readonly-must-win
         for flags in -p -pf -fp; do
           wrap "$flags" bash -ec 'test "$PWD" = "$HOME"; test ! -e "$HOME/project/cwd-marker"'
         done
@@ -439,6 +445,45 @@ pkgs.testers.nixosTest {
           ! touch profile-link/write-marker
         '
         test ! -e /tmp/profile-target/write-marker
+      """))
+
+    with subtest("profile symlinks to targets inside and outside a mounted parent stay readable and read-only"):
+      machine.succeed(as_alice("""
+        mkdir -p /tmp/profile-parent/contained-target /tmp/profile-parent-sibling-target
+        echo contained-profile-data > /tmp/profile-parent/contained-target/profile-data
+        echo external-profile-data > /tmp/profile-parent-sibling-target/profile-data
+        ln -s /tmp/profile-parent/contained-target /tmp/profile-parent/link-to-contained-target
+        ln -s /tmp/profile-parent-sibling-target /tmp/profile-parent/link-to-external-target
+        NIX_PROFILES="$NIX_PROFILES /tmp/profile-parent /tmp/profile-parent/link-to-contained-target /tmp/profile-parent/link-to-external-target" \
+          wrap -p bash -ec '
+            test -L /tmp/profile-parent/link-to-contained-target
+            test -L /tmp/profile-parent/link-to-external-target
+            test "$(cat /tmp/profile-parent/link-to-contained-target/profile-data)" = contained-profile-data
+            test "$(cat /tmp/profile-parent/link-to-external-target/profile-data)" = external-profile-data
+            ! touch /tmp/profile-parent/link-to-contained-target/write-must-fail
+            ! touch /tmp/profile-parent/link-to-external-target/write-must-fail
+          '
+        test ! -e /tmp/profile-parent/contained-target/write-must-fail
+        test ! -e /tmp/profile-parent-sibling-target/write-must-fail
+      """))
+
+    with subtest("persistent home preserves host profiles and explicit mounts override profile permissions"):
+      machine.succeed(as_alice("""
+        export HOME=/tmp/profile-host-home
+        mkdir -p "$HOME" /tmp/profile-host-target
+        echo host-profile-data > /tmp/profile-host-target/profile-data
+        ln -s /tmp/profile-host-target "$HOME/profile-link"
+        export NIX_PROFILES="$NIX_PROFILES $HOME/profile-link /tmp/profile-host-target"
+        wrap -p -H /tmp/profile-persistent-home bash -ec '
+          test "$(cat "$HOME/profile-link/profile-data")" = host-profile-data
+          ! touch "$HOME/profile-link/write-must-fail"
+          touch "$HOME/persistent-home-marker"
+        '
+        test -e /tmp/profile-persistent-home/persistent-home-marker
+        wrap -p -w /tmp/profile-host-target bash -ec '
+          echo explicit-write > /tmp/profile-host-target/explicit-write-marker
+        '
+        test "$(cat /tmp/profile-host-target/explicit-write-marker)" = explicit-write
       """))
 
     with subtest("Network files are available only with -n"):

@@ -108,7 +108,6 @@ By default, the imperative `wrap` command will:
   -r PATH  Mount PATH into sandbox in read-only mode.
   -w PATH  Mount PATH into sandbox in read write mode.
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
-           HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
   -v       Verbose output for debugging.
 ```
 
@@ -129,6 +128,20 @@ By default, the imperative `wrap` command will:
            any namespaces. Use together with bwrap --unshare-* options
            (man bwrap(1)) to unshare manually.
 ```
+
+### Filesystem mounts
+
+Path mounts are applied in this order; later mounts take precedence:
+
+1. General paths such as `/bin` and `/nix`, read-only.
+2. Persistent storage (`-H`) at the caller's unchanged `$HOME`.
+3. The writable working directory, when implicit sharing is enabled and allowed.
+4. `$NIX_PROFILES`, read-only, after home/cwd mounts so they cannot hide host profiles.
+5. Explicit `-r` and `-w` mounts, in argument order, at their original host paths.
+
+Explicit mounts have the final say: `-r "$PWD"` overrides implicit writable cwd
+sharing, and `-w` can override a default read-only runtime/profile mount.
+Writable parent mounts can also hide earlier read-only mounts beneath them.
 
 ## How to use declaratively
 

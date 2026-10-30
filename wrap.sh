@@ -149,6 +149,56 @@ ADVANCED OPTIONS:
 END_OF_USAGE
 }
 
+# Match path components, not just prefixes: /foo does not contain /foobar.
+path_is_covered() {
+  local path="$1" parent
+  shift
+  for parent in "$@"; do
+    if [[ "$parent" == / || "$path" == "$parent" || "$path" == "$parent/"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Return success if $1 (the physical cwd from pwd -P) may be shared writable.
+# -p always disables sharing. Otherwise -f bypasses the HOME identity check
+# and protected-path patterns; without -f, either match prevents sharing.
+# TODO: -p -f is cursed, we should deprecate it, manual -r/-w can do the same
+should_share_cwd() {
+  local cwd="$1" pattern
+  [[ $share_cwd -eq 1 ]] || return 1
+  [[ $force_share_cwd -eq 0 ]] || return 0
+  [[ "$cwd" -ef "$HOME" ]] && return 1
+  for pattern in "${paths_disallowed_from_share_cwd[@]}"; do
+    [[ "$cwd" =~ $pattern ]] && return 1
+  done
+  return 0
+}
+
+# Add read-only paths without mounting over symlinks exposed by earlier binds.
+mount_readonly_paths() {
+  local p resolved destination
+  for p in "$@"; do
+    [[ -d "$p" ]] || continue
+    resolved="$(readlink -f -- "$p")"
+
+    # A symlink needs both its name and target supplied by read-only mounts.
+    if path_is_covered "$p" "${readonly_mounts[@]}" &&
+       path_is_covered "$resolved" "${readonly_mounts[@]}"; then
+      continue
+    fi
+
+    destination="$p"
+    if path_is_covered "$p" "${bound_paths[@]}"; then
+      destination="$resolved"
+    fi
+    bwrap_opts+=(--ro-bind "$p" "$destination")
+    bound_paths+=("$destination")
+    readonly_mounts+=("$destination")
+  done
+}
+
 TMPDIR=$(mktemp -d)
 
 cleanup() {
@@ -165,34 +215,27 @@ fi
 unshare_all=1
 share_cwd=1
 force_share_cwd=0
-mount_opts=()
+home_source=""
+explicit_mounts=()
 xauth_src=""
 
 while getopts "r:w:e:H:abcdfhmnpuv" opt; do
   case "$opt" in
 
-  # bind / mount a path readonly in sandbox.
-  # queue explicit mounts until after persistent home mounts.
-  r)
-    # Create a directory if the path does not exist
+  # Collect explicit mounts; apply them after persistent home storage.
+  r | w)
     [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
-
-    mount_opts+=(--ro-bind "$OPTARG" "$OPTARG")
+    if [[ "$opt" == r ]]; then
+      explicit_mounts+=(--ro-bind "$OPTARG" "$OPTARG")
+    else
+      explicit_mounts+=(--bind "$OPTARG" "$OPTARG")
+    fi
     ;;
 
-  # bind / mount a path read/write in sandbox.
-  # queue explicit mounts until after persistent home mounts.
-  w)
-    # Create a directory if the path does not exist
-    [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
-
-    mount_opts+=(--bind "$OPTARG" "$OPTARG")
-    ;;
-
-  # Mount persistent storage at the caller's HOME before explicit mounts into it.
+  # Select persistent home storage without changing HOME; the last -H wins.
   H)
     [[ -e "$OPTARG" ]] || mkdir -p "$OPTARG"
-    bwrap_opts+=(--bind "$OPTARG" "$HOME")
+    home_source="$OPTARG"
     ;;
 
   # grant access to camera device
@@ -336,74 +379,55 @@ done
 # Shift off the options and optional -- off $@.
 shift $((OPTIND - 1))
 
-bwrap_opts+=("${mount_opts[@]}")
+# Assemble path mounts in precedence order. Later mounts override earlier ones.
+bound_paths=()
+# Track already-mounted read-only destinations to skip redundant mounts.
+readonly_mounts=()
 
-# Resolve symlinks before checking whether the working directory may be shared.
+# 1. General defaults; retain standalone aliases such as /bin.
+mount_readonly_paths "${paths_general[@]}"
+
+# 2. Persistent home storage, without changing HOME.
+if [[ -n "$home_source" ]]; then
+  bwrap_opts+=(--bind "$home_source" "$HOME")
+  # A writable overlay may hide earlier read-only mounts.
+  readonly_mounts=()
+fi
+
+# 3. Implicit writable cwd, subject to -p, -f, and protected-path rules.
 cwd="$(pwd -P)"
-
-if [[ $unshare_all -eq 1 ]]; then
-  bwrap_opts=(--unshare-all "${bwrap_opts[@]}")
-fi
-
-# Check for paths we do not want to share implicitly if we are not forced to
-if [[ $force_share_cwd -eq 0 ]]; then
-  if [[ "$cwd" -ef "$HOME" ]]; then
-    share_cwd=0
-  fi
-  for p in "${paths_disallowed_from_share_cwd[@]}"; do
-    if [[ "$cwd" =~ $p ]]; then
-      # Disable current working directory sharing if pattern matches
-      share_cwd=0
-      break
-    fi
-  done
-fi
-
-if [[ $share_cwd -eq 1 ]]; then
+if should_share_cwd "$cwd"; then
   bwrap_opts+=(--bind "$cwd" "$cwd")
+  bound_paths+=("$cwd")
+  readonly_mounts=()
 fi
 
+# 4. Profiles must survive home/cwd overlays and remain read-only by default.
+readonly_paths=()
 if [ -v NIX_PROFILES ]; then
   OLDIFS=$IFS
   IFS=" "
   for p in ${NIX_PROFILES}; do
-    paths_general+=("$p")
+    readonly_paths+=("$p")
   done
   IFS=$OLDIFS
 fi
+mount_readonly_paths "${readonly_paths[@]}"
 
-# Paths already mounted into the sandbox. If a previously bound path is an
-# ancestor of the path being mounted, the latter already exists in the
-# sandbox as the host's symlink, and bwrap cannot mount on a symlink
-# destination (e.g. NIX_PROFILES entries such as /nix/var/nix/profiles/default
-# and ~/.nix-profile, supplied by the /nix bind). Mount those at their
-# resolved target instead. Without a bound ancestor bwrap creates the mount
-# point itself, and the literal path must be kept: /bin, /usr/bin, /lib and
-# /lib64 are symlinks on NixOS and are how the sandbox finds basic commands.
-bound_paths=()
-if [[ $share_cwd -eq 1 ]]; then
-  bound_paths+=("$cwd")
-fi
-
-for p in "${paths_general[@]}"; do
-  if [ -d "$p" ]; then
-    destination="$p"
-    for b in "${bound_paths[@]}"; do
-      if [[ "$b" == / || "$p" == "$b" || "$p" == "$b/"* ]]; then
-        destination="$(readlink -f -- "$p")"
-        break
-      fi
-    done
-    bwrap_opts+=(--ro-bind "$p" "$destination")
-    bound_paths+=("$p")
-  fi
-done
+# 5. Explicit requests have the final say, in argument order.
+bwrap_opts+=("${explicit_mounts[@]}")
 
 # Desktop sources use the host HOME; mount auth after any sandbox-home binds.
 if [[ -n "$xauth_src" ]]; then
   bwrap_opts+=(--ro-bind-try "$xauth_src" "$HOME/.Xauthority")
 fi
 
+# Unshare all namespaces flag
+if [[ $unshare_all -eq 1 ]]; then
+  bwrap_opts=(--unshare-all "${bwrap_opts[@]}")
+fi
+
+# Environment variables
 for e in "${env_vars[@]}"; do
   if [ -v "$e" ]; then
     bwrap_opts+=(--setenv "$e" "${!e}")
@@ -411,6 +435,7 @@ for e in "${env_vars[@]}"; do
 done
 bwrap_opts+=(--setenv HOME "$HOME")
 
+# Finally: Launch it
 exec bwrap \
   --clearenv \
   --dev /dev \
