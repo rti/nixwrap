@@ -6,6 +6,8 @@ pkgs.testers.nixosTest {
   nodes.machine = { config, pkgs, ... }: {
     system.stateVersion = "24.05";
     networking.dhcpcd.enable = false; # boots faster
+    # Match common NixOS: disable legacy TIOCSTI (nixpkgs common-config.nix)
+    boot.kernel.sysctl = { "dev.tty.legacy_tiocsti" = 0; };
     environment.systemPackages = [
       wrap
       (mkWrap {
@@ -46,8 +48,22 @@ pkgs.testers.nixosTest {
     };
   };
 
+  nodes.machine_tiocsti = { config, pkgs, ... }: {
+    system.stateVersion = "24.05";
+    networking.dhcpcd.enable = false; # boots faster
+    # Enable legacy TIOCSTI to test the error path
+    boot.kernel.sysctl = { "dev.tty.legacy_tiocsti" = 1; };
+    environment.systemPackages = [ wrap ];
+
+    users.users.alice = {
+      isNormalUser = true;
+      createHome = true;
+    };
+  };
+
   testScript = /* python */ ''
     machine.wait_for_unit("default.target")
+    machine_tiocsti.wait_for_unit("default.target")
 
     # Run a script as alice
     # This function wraps a bash script with su in order to run as alice.
@@ -711,6 +727,39 @@ pkgs.testers.nixosTest {
         '
         test -e cwd-marker
         test -e "$HOME/profile data/marker"
+      """))
+
+    with subtest("dev.tty.legacy_tiocsti=0 allows wrap without --new-session"):
+      machine.succeed("""
+        set -euo pipefail
+        cat /proc/sys/dev/tty/legacy_tiocsti | grep '^0$' ||
+          (echo 'Unexpected: legacy_tiocsti is not 0'; false)
+        wrap bash -c 'echo ok' | grep '^ok$' ||
+          (echo 'Unexpected: wrap failed when legacy_tiocsti is 0'; false)
+      """)
+
+    with subtest("dev.tty.legacy_tiocsti=1 requires --new-session"):
+      machine_tiocsti.succeed("""
+        set -euo pipefail
+        cat /proc/sys/dev/tty/legacy_tiocsti | grep '^1$' ||
+          (echo 'Unexpected: legacy_tiocsti is not 1'; false)
+
+        # Without --new-session, wrap should fail
+        if wrap bash -c 'true' 2>/dev/null; then
+          echo 'Unexpected: wrap succeeded without --new-session when legacy_tiocsti is 1'
+          false
+        fi
+
+        # Error message should mention --new-session
+        ERR=$(wrap bash -c 'true' 2>&1 || true)
+        echo "$ERR" | grep -q -- '--new-session' ||
+          (echo 'Unexpected: error message does not mention --new-session'; false)
+      """)
+
+    with subtest("dev.tty.legacy_tiocsti=1 allows wrap with --new-session"):
+      machine_tiocsti.succeed(as_alice("""
+        wrap -- --new-session bash -c 'echo ok' | grep '^ok$' ||
+          (echo 'Unexpected: wrap failed with --new-session when legacy_tiocsti is 1'; false)
       """))
   '';
 }

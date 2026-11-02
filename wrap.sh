@@ -386,6 +386,25 @@ done
 # Shift off the options and optional -- off $@.
 shift $((OPTIND - 1))
 
+# Check if TIOCSTI is enabled in the kernel and --new-session is not provided.
+# TIOCSTI can be used to escape the sandbox (CVE-2017-5226).
+# https://github.com/containers/bubblewrap/issues/142
+if [[ -f /proc/sys/dev/tty/legacy_tiocsti ]] && [[ "$(cat /proc/sys/dev/tty/legacy_tiocsti)" == "1" ]]; then
+  has_new_session=0
+  for arg in "$@"; do
+    if [[ "$arg" == "--new-session" ]]; then
+      has_new_session=1
+      break
+    fi
+  done
+  if [[ $has_new_session -eq 0 ]]; then
+    echo "Error: dev.tty.legacy_tiocsti is enabled. TIOCSTI ioctl can be used to escape the sandbox (CVE-2017-5226)." >&2
+    echo "Please add --new-session to your bwrap arguments." >&2
+    echo "  Example: wrap -- --new-session your-program" >&2
+    exit 1
+  fi
+fi
+
 # Assemble path mounts in precedence order. Later mounts override earlier ones.
 bound_paths=()
 # Track already-mounted read-only destinations to skip redundant mounts.
