@@ -123,12 +123,6 @@ By default, the imperative `wrap` command will:
            if it is not the caller's home and does not match these patterns:
            ^/$, ^/home$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
            This option bypasses that check, but does not override -p.
-  -m       **DEPRECATED** Will be removed in the future, use plain bwrap.
-           Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
-           and tries to unshare (continue on failures) user and cgroup 
-           namespaces. With this option, wrap does not automatically unshare 
-           any namespaces. Use together with bwrap --unshare-* options 
-           (man bwrap(1)) to unshare manually.
 ```
 
 ### Filesystem mounts

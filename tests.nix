@@ -136,6 +136,17 @@ pkgs.testers.nixosTest {
       """))
 
 
+    with subtest("removed -m option rejects the launch"):
+      machine.succeed(as_alice("""
+        marker="$HOME/manual-unsharing-command-ran"
+        test ! -e "$marker"
+        if wrap -m touch "$marker"; then
+          echo 'Unexpected: removed -m option accepted'
+          exit 1
+        fi
+        test ! -e "$marker"
+      """))
+
     with subtest("Environment variable $WAYLAND_DISPLAY is hidden by default"):
       machine.succeed(as_alice("""
         # ensure $WAYLAND_DISPLAY is set outside sandbox

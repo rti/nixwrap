@@ -142,12 +142,6 @@ ADVANCED OPTIONS:
            if it is not the caller's home and does not match these patterns:
            ^/$, ^/home$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
            This option bypasses that check, but does not override -p.
-  -m       **DEPRECATED** Will be removed in the future, use plain bwrap.
-           Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
-           and tries to unshare (continue on failures) user and cgroup 
-           namespaces. With this option, wrap does not automatically unshare 
-           any namespaces. Use together with bwrap --unshare-* options 
-           (man bwrap(1)) to unshare manually.
 END_OF_USAGE
 }
 
@@ -214,14 +208,13 @@ if [[ $# -eq 0 ]]; then
   exit 1
 fi
 
-unshare_all=1
 share_cwd=1
 force_share_cwd=0
 home_source=""
 explicit_mounts=()
 xauth_src=""
 
-while getopts "r:w:e:H:abcdfhmnpuv" opt; do
+while getopts "r:w:e:H:abcdfhnpuv" opt; do
   case "$opt" in
 
   # Collect explicit mounts; apply them after persistent home storage.
@@ -343,12 +336,6 @@ while getopts "r:w:e:H:abcdfhmnpuv" opt; do
     env_vars+=("$OPTARG")
     ;;
 
-  # by default nixwrap will run bwrap with --unshare-all,
-  # this disables it, see man bwrap(1)
-  m)
-    unshare_all=0
-    ;;
-
   # by default nixwrap will share the current working directory
   # with the wrapped process, this disables it
   p)
@@ -450,10 +437,8 @@ if [[ -n "$xauth_src" ]]; then
   bwrap_opts+=(--ro-bind-try "$xauth_src" "$HOME/.Xauthority")
 fi
 
-# Unshare all namespaces flag
-if [[ $unshare_all -eq 1 ]]; then
-  bwrap_opts=(--unshare-all "${bwrap_opts[@]}")
-fi
+# Namespace isolation is always enabled.
+bwrap_opts=(--unshare-all "${bwrap_opts[@]}")
 
 # Environment variables
 for e in "${env_vars[@]}"; do
