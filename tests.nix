@@ -1,4 +1,8 @@
-{ pkgs, wrap, mkWrap }:
+{
+  pkgs,
+  wrap,
+  mkWrap,
+}:
 
 pkgs.testers.nixosTest {
   name = "mytest";
@@ -6,10 +10,17 @@ pkgs.testers.nixosTest {
   nodes.machine = { config, pkgs, ... }: {
     system.stateVersion = "24.05";
     networking.dhcpcd.enable = false; # boots faster
+    networking.defaultGateway = "192.168.1.3";
+    networking.nameservers = [ "192.168.1.3" ];
     # Match common NixOS: disable legacy TIOCSTI (nixpkgs common-config.nix)
-    boot.kernel.sysctl = { "dev.tty.legacy_tiocsti" = 0; };
+    boot.kernel.sysctl = {
+      "dev.tty.legacy_tiocsti" = 0;
+    };
     environment.systemPackages = [
       wrap
+      pkgs.socat
+      pkgs.curl
+      pkgs.dig
       (mkWrap {
         name = "profile-test";
         package = pkgs.bash;
@@ -42,9 +53,45 @@ pkgs.testers.nixosTest {
       })
     ];
 
+    systemd.services.network-test-host-sockets.script = ''
+      ${pkgs.socat}/bin/socat ABSTRACT-LISTEN:wrap-host-abstract,fork EXEC:${pkgs.coreutils}/bin/cat &
+      ${pkgs.socat}/bin/socat TCP4-LISTEN:18080,reuseaddr,fork EXEC:${pkgs.coreutils}/bin/cat &
+      ${pkgs.socat}/bin/socat TCP6-LISTEN:18080,bind=::1,ipv6only=1,reuseaddr,fork EXEC:${pkgs.coreutils}/bin/cat &
+      ${pkgs.socat}/bin/socat UDP4-RECVFROM:18081,bind=127.0.0.1,fork EXEC:${pkgs.coreutils}/bin/cat &
+      wait
+    '';
+
     users.users.alice = {
       isNormalUser = true;
       createHome = true;
+    };
+  };
+
+  nodes.peer = { pkgs, ... }: {
+    system.stateVersion = "24.05";
+    networking.dhcpcd.enable = false;
+    networking.interfaces.eth1.ipv4.addresses = [
+      {
+        address = "192.168.1.3";
+        prefixLength = 24;
+      }
+    ];
+    networking.firewall.allowedTCPPorts = [ 8080 ];
+    services.dnsmasq = {
+      enable = true;
+      resolveLocalQueries = false;
+      settings = {
+        address = "/network.test/192.168.1.3";
+        interface = "eth1";
+      };
+    };
+    networking.firewall.allowedUDPPorts = [ 53 ];
+    services.nginx = {
+      enable = true;
+      virtualHosts."network.test" = {
+        listen = [{ addr = "0.0.0.0"; port = 8080; }];
+        root = pkgs.writeTextDir "index.html" "outbound-network-ok";
+      };
     };
   };
 
@@ -52,7 +99,9 @@ pkgs.testers.nixosTest {
     system.stateVersion = "24.05";
     networking.dhcpcd.enable = false; # boots faster
     # Enable legacy TIOCSTI to test the error path
-    boot.kernel.sysctl = { "dev.tty.legacy_tiocsti" = 1; };
+    boot.kernel.sysctl = {
+      "dev.tty.legacy_tiocsti" = 1;
+    };
     environment.systemPackages = [ wrap ];
 
     users.users.alice = {
@@ -79,9 +128,6 @@ pkgs.testers.nixosTest {
         f"--command $'{script}'"
       )
 
-    # as_alice = lambda script: (
-    #   f"su --login alice --shell ${pkgs.bash}/bin/bash --command $'{script.replace("'", r"\'")}'"
-    # )
 
     with subtest("Environment variable $HOME is always exposed"):
       machine.succeed(as_alice("""
@@ -135,6 +181,18 @@ pkgs.testers.nixosTest {
           (echo 'Unexpected: whoami does not return username in sandbox'; false)
       """))
 
+    with subtest("pasta preserves the caller's numeric identity and user lookup"):
+      machine.succeed(as_alice("""
+        export EXPECTED_UID="$(id -u)" EXPECTED_GID="$(id -g)"
+        for flags in '-n' '-n -u'; do
+          wrap $flags -e EXPECTED_UID -e EXPECTED_GID bash -ec '
+            test "$UID" = "$EXPECTED_UID"
+            test "$(id -u)" = "$EXPECTED_UID"
+            test "$(id -g)" = "$EXPECTED_GID"
+          '
+        done
+        test "$(wrap -n -u whoami)" = alice
+      """))
 
     with subtest("removed -m option rejects the launch"):
       machine.succeed(as_alice("""
@@ -146,6 +204,7 @@ pkgs.testers.nixosTest {
         fi
         test ! -e "$marker"
       """))
+
 
     with subtest("Environment variable $WAYLAND_DISPLAY is hidden by default"):
       machine.succeed(as_alice("""
@@ -550,6 +609,78 @@ pkgs.testers.nixosTest {
           (echo 'Unexpected: /etc/ssl not visible with -n'; false)
       """))
 
+    with subtest("pasta sandbox uses the caller's hostname with a wrap suffix"):
+      machine.succeed(as_alice("""
+        expected="$(cat /proc/sys/kernel/hostname)-wrap"
+        test "$(wrap -n cat /proc/sys/kernel/hostname)" = "$expected"
+      """))
+
+    with subtest("pasta routes sandbox traffic through wrap0"):
+      machine.succeed(as_alice("""
+        wrap -n ${pkgs.iproute2}/bin/ip route get 192.168.1.3 | grep -F ' dev wrap0 '
+      """))
+
+    with subtest("pasta allows outbound TCP and DNS without exposing host sockets"):
+      peer.wait_for_unit("nginx.service")
+      peer.wait_for_unit("dnsmasq.service")
+      peer.wait_for_open_port(8080)
+      machine.succeed("systemctl start network-test-host-sockets.service")
+      machine.wait_for_open_port(18080)
+      host_socket_addresses = (
+        "ABSTRACT-CONNECT:wrap-host-abstract "
+        "TCP4:127.0.0.1:18080 "
+        "'TCP6:[::1]:18080' "
+        "TCP4:192.168.1.1:18080 "
+        "UDP4:127.0.0.1:18081"
+      )
+      reachable_host_sockets = """
+        set -euo pipefail
+        for address in """ + host_socket_addresses + """; do
+          reply="$(printf host | timeout 2 socat -t 1 -T 1 - "$address" 2>/dev/null || true)"
+          [[ "$reply" = host ]] || {
+            echo "Host fixture did not respond: $address" >&2
+            exit 1
+          }
+        done
+      """
+      # Positive controls: all host fixtures must respond before isolation probes.
+      machine.wait_until_succeeds(as_alice(
+        "bash -s <<'PROBE'\n" + reachable_host_sockets + "\nPROBE"
+      ), timeout=15)
+
+      blocked_host_sockets = """
+        set -euo pipefail
+        for address in """ + host_socket_addresses + """; do
+          reply="$(printf host | timeout 2 socat -t 1 -T 1 - "$address" 2>/dev/null || true)"
+          [[ -z "$reply" ]] || {
+            echo "Unexpected host response: $address: $reply" >&2
+            exit 1
+          }
+        done
+      """
+      for flags in ["-n", "-n -n"]:
+        machine.succeed(as_alice(
+          "wrap " + flags + " bash -s <<'PROBE'\n" + blocked_host_sockets + "\nPROBE"
+        ))
+
+      machine.succeed(as_alice("""
+        for flags in '-n' '-n -n'; do
+          wrap $flags bash -euo pipefail -c '
+            test "$(dig +short +time=2 +tries=1 network.test A)" = 192.168.1.3
+            test "$(curl --noproxy "*" --fail --silent --show-error --max-time 5 \
+              http://network.test:8080)" = outbound-network-ok
+          '
+        done
+
+        # Without -n, even a numeric peer address must remain unreachable.
+        if wrap curl --noproxy "*" --fail --silent --show-error --max-time 2 \
+          http://192.168.1.3:8080; then
+          echo 'Unexpected outbound network access without -n' >&2
+          exit 1
+        fi
+      """))
+      machine.succeed("systemctl stop network-test-host-sockets.service")
+
     with subtest("Audio sockets visible only with -a"):
       machine.succeed(as_alice("""
         export XDG_RUNTIME_DIR=/tmp/xdg
@@ -774,4 +905,3 @@ pkgs.testers.nixosTest {
       """))
   '';
 }
-

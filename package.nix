@@ -19,7 +19,12 @@ stdenvNoCC.mkDerivation {
     cp -r wrap.sh $out/bin/wrap
 
     wrapProgram $out/bin/wrap \
-        --prefix PATH : ${lib.makeBinPath [ pkgs.bubblewrap ]} 
+        --prefix PATH : ${
+          lib.makeBinPath [
+            pkgs.bubblewrap
+            pkgs.passt
+          ]
+        }
   '';
 
   meta = with lib; {

@@ -120,7 +120,7 @@ Usage: wrap [OPTIONS] [-- BWRAP_ARGS] PROGRAM_TO_WRAP_WITH_ARGS
 
 OPTIONS:
   -d       Allow Desktop access, Wayland, X11, and rendering hardware.
-  -n       Allow Network access.
+  -n       Allow Network access, without sharing host loopback or abstract sockets.
   -a       Allow Audio access.
   -c       Allow Camera access.
   -b       Allow DBus access.
@@ -211,6 +211,7 @@ fi
 share_cwd=1
 force_share_cwd=0
 home_source=""
+network=0
 explicit_mounts=()
 xauth_src=""
 
@@ -311,8 +312,7 @@ while getopts "r:w:e:H:abcdfhnpuv" opt; do
 
   # grant network access
   n)
-    bwrap_opts+=(--share-net)
-    bwrap_opts+=(--ro-bind /etc/resolv.conf /etc/resolv.conf)
+    network=1
     bwrap_opts+=(--ro-bind /etc/ssl /etc/ssl)
     bwrap_opts+=(--ro-bind /etc/static/ssl /etc/static/ssl)
     ;;
@@ -345,7 +345,7 @@ while getopts "r:w:e:H:abcdfhnpuv" opt; do
   # by default nixwrap will NOT share the current working directory for a set
   # of possibly sensitive paths. this overwrides this and forces to share these
   # paths (see paths_disallowed_from_share_cwd)
-  f) 
+  f)
     force_share_cwd=1
     ;;
 
@@ -448,8 +448,24 @@ for e in "${env_vars[@]}"; do
 done
 bwrap_opts+=(--setenv HOME "$HOME")
 
+# pasta owns the outer network namespace; bwrap must retain it, not the host's.
+# Disable automatic forwarding in both directions and gateway-to-host mapping.
+pasta_launch=()
+if [[ $network -eq 1 ]]; then
+  IFS= read -r sandbox_hostname </proc/sys/kernel/hostname
+  sandbox_hostname+="-wrap"
+  bwrap_opts+=(--hostname "$sandbox_hostname")
+  printf 'nameserver 169.254.1.1\n' >"$TMPDIR/resolv.conf"
+  bwrap_opts+=(--share-net --ro-bind "$TMPDIR/resolv.conf" /etc/resolv.conf)
+  # pasta maps the caller to root; restore its numeric identity in an inner userns.
+  bwrap_opts+=(--uid "$UID" --gid "$(id -g)")
+  pasta_launch=(pasta --config-net --ns-ifname wrap0 --no-map-gw --hostname "$sandbox_hostname"
+    --tcp-ports none --udp-ports none --tcp-ns none --udp-ns none
+    --dns-forward 169.254.1.1 --)
+fi
+
 # Finally: Launch it
-exec bwrap \
+exec "${pasta_launch[@]}" bwrap \
   --clearenv \
   --dev /dev \
   --proc /proc \
