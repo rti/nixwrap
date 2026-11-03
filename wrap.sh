@@ -136,12 +136,14 @@ ADVANCED OPTIONS:
   -p       Do not implicitly mount the current working directory writable.
            Takes precedence over -f. The launch directory is preserved if it
            exists inside the sandbox; otherwise bubblewrap falls back to HOME.
-  -f       Force share current working directory. By default wrap will share
+  -f       **DEPRECATED** Will be removed in the future, use -w or -r.
+           Force share current working directory. By default wrap will share
            the current working directory as a write mount and cd into it only
            if it is not the caller's home and does not match these patterns:
            ^/$, ^/home$, ^/boot, ^/etc, ^/proc, ^/run, ^/sys, ^/var
            This option bypasses that check, but does not override -p.
-  -m       Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
+  -m       **DEPRECATED** Will be removed in the future, use plain bwrap.
+           Manual unsharing. By default wrap unshares ipc, net, pid, and uts 
            and tries to unshare (continue on failures) user and cgroup 
            namespaces. With this option, wrap does not automatically unshare 
            any namespaces. Use together with bwrap --unshare-* options 
