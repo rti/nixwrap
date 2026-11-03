@@ -122,6 +122,8 @@ OPTIONS:
   -d       Allow Desktop access, Wayland, X11, and rendering hardware.
   -n       Allow Network access, without sharing host loopback or abstract sockets.
   -I IFACE Allow Network access through host interface IFACE (implies -n).
+  -D ADDR  Use ADDR as the upstream DNS server for the sandbox forwarder
+           instead of the host's first nameserver (implies -n).
   -a       Allow Audio access.
   -c       Allow Camera access.
   -b       Allow DBus access.
@@ -214,10 +216,11 @@ force_share_cwd=0
 home_source=""
 network=0
 outbound_interface=""
+dns_host=""
 explicit_mounts=()
 xauth_src=""
 
-while getopts "r:w:e:H:I:abcdfhnpuv" opt; do
+while getopts "r:w:e:H:I:D:abcdfhnpuv" opt; do
   case "$opt" in
 
   # Collect explicit mounts; apply them after persistent home storage.
@@ -313,7 +316,7 @@ while getopts "r:w:e:H:I:abcdfhnpuv" opt; do
     ;;
 
   # grant network access
-  n | I)
+  n | I | D)
     network=1
     if [[ "$opt" == I ]]; then
       if [[ -z "$OPTARG" ]]; then
@@ -321,6 +324,13 @@ while getopts "r:w:e:H:I:abcdfhnpuv" opt; do
         exit 1
       fi
       outbound_interface="$OPTARG"
+    fi
+    if [[ "$opt" == D ]]; then
+      if [[ -z "$OPTARG" ]]; then
+        echo "Error: -D requires a non-empty DNS address." >&2
+        exit 1
+      fi
+      dns_host="$OPTARG"
     fi
     bwrap_opts+=(--ro-bind /etc/ssl /etc/ssl)
     bwrap_opts+=(--ro-bind /etc/static/ssl /etc/static/ssl)
@@ -471,6 +481,9 @@ if [[ $network -eq 1 ]]; then
   pasta_launch=(pasta --config-net --ns-ifname wrap0 --no-map-gw --hostname "$sandbox_hostname"
     --tcp-ports none --udp-ports none --tcp-ns none --udp-ns none
     --dns-forward "$dns_forward")
+  if [[ -n "$dns_host" ]]; then
+    pasta_launch+=(--dns-host "$dns_host")
+  fi
   if [[ -n "$outbound_interface" ]]; then
     ipv4_addresses="$(ip -o -4 address show dev "$outbound_interface")"
     ipv6_addresses="$(ip -o -6 address show dev "$outbound_interface" scope global)"
