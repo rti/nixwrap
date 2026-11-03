@@ -103,6 +103,7 @@ By default, the imperative `wrap` command will:
 ```
   -d       Allow Desktop access, Wayland, X11, and rendering hardware.
   -n       Allow Network access, without sharing host loopback or abstract sockets.
+  -I IFACE Allow Network access through host interface IFACE (implies -n).
   -a       Allow Audio access.
   -c       Allow Camera access.
   -b       Allow DBus access.
