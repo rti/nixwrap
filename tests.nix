@@ -12,6 +12,7 @@ pkgs.testers.nixosTest {
     networking.dhcpcd.enable = false; # boots faster
     networking.defaultGateway = "192.168.1.3";
     networking.nameservers = [ "192.168.1.3" ];
+    networking.firewall.allowedUDPPorts = [ 51820 ];
     # Match common NixOS: disable legacy TIOCSTI (nixpkgs common-config.nix)
     boot.kernel.sysctl = {
       "dev.tty.legacy_tiocsti" = 0;
@@ -21,6 +22,7 @@ pkgs.testers.nixosTest {
       pkgs.socat
       pkgs.curl
       pkgs.dig
+      pkgs.wireguard-tools
       (mkWrap {
         name = "profile-test";
         package = pkgs.bash;
@@ -70,6 +72,7 @@ pkgs.testers.nixosTest {
   nodes.peer = { pkgs, ... }: {
     system.stateVersion = "24.05";
     networking.dhcpcd.enable = false;
+    environment.systemPackages = [ pkgs.wireguard-tools ];
     networking.interfaces.eth1.ipv4.addresses = [
       {
         address = "192.168.1.3";
@@ -81,16 +84,28 @@ pkgs.testers.nixosTest {
       enable = true;
       resolveLocalQueries = false;
       settings = {
-        address = "/network.test/192.168.1.3";
-        interface = "eth1";
+        address = [ "/network.test/192.168.1.3" "/wg.test/10.77.0.2" "/wg.test/fd77::2" ];
+        interface = [ "eth1" "wg1" ];
       };
     };
-    networking.firewall.allowedUDPPorts = [ 53 ];
+    networking.firewall.allowedUDPPorts = [ 53 51820 18082 ];
+    systemd.services.network-test-udp = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig.ExecStart = "${pkgs.socat}/bin/socat UDP4-RECVFROM:18082,fork EXEC:${pkgs.coreutils}/bin/cat";
+    };
+    systemd.services.network-test-udp6 = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig.ExecStart = "${pkgs.socat}/bin/socat UDP6-RECVFROM:18082,ipv6only=1,fork EXEC:${pkgs.coreutils}/bin/cat";
+    };
     services.nginx = {
       enable = true;
       virtualHosts."network.test" = {
-        listen = [{ addr = "0.0.0.0"; port = 8080; }];
+        listen = [
+          { addr = "0.0.0.0"; port = 8080; }
+          { addr = "[::]"; port = 8080; }
+        ];
         root = pkgs.writeTextDir "index.html" "outbound-network-ok";
+        locations."/source".extraConfig = ''return 200 "$remote_addr";'';
       };
     };
   };
@@ -680,6 +695,117 @@ pkgs.testers.nixosTest {
         fi
       """))
       machine.succeed("systemctl stop network-test-host-sockets.service")
+
+    with subtest("-I binds unprivileged outbound traffic to WireGuard without fallback"):
+      machine.succeed("umask 077; wg genkey > /tmp/wrap-wg.key")
+      peer.succeed("umask 077; wg genkey > /tmp/wrap-wg.key")
+      machine_key = machine.succeed("wg pubkey < /tmp/wrap-wg.key").strip()
+      peer_key = peer.succeed("wg pubkey < /tmp/wrap-wg.key").strip()
+      machine.succeed(
+        "ip link add wg1 type wireguard; "
+        "ip address add 10.77.0.1/32 dev wg1; "
+        f"wg set wg1 private-key /tmp/wrap-wg.key listen-port 51820 peer {peer_key} "
+        "endpoint 192.168.1.3:51820 allowed-ips 10.77.0.2/32; "
+        "ip link set wg1 up; "
+        "ip route add 10.77.0.2/32 dev wg1 metric 100; "
+        # Prefer the ordinary LAN unless the socket is explicitly bound to wg1.
+        "ip route add 10.77.0.2/32 via 192.168.1.3 dev eth1 metric 10"
+      )
+      peer.succeed(
+        "ip link add wg1 type wireguard; "
+        "ip address add 10.77.0.2/32 dev wg1; "
+        f"wg set wg1 private-key /tmp/wrap-wg.key listen-port 51820 peer {machine_key} "
+        "endpoint 192.168.1.1:51820 allowed-ips 10.77.0.1/32; "
+        "ip link set wg1 up; "
+        "ip route add 10.77.0.1/32 dev wg1"
+      )
+      peer.wait_for_unit("network-test-udp.service")
+      machine.succeed("cp -L /etc/resolv.conf /tmp/wrap-host-resolv.conf; printf 'nameserver 10.77.0.2\\n' > /etc/resolv.conf")
+      try:
+        machine.succeed(as_alice("""
+          # Positive control: the destination is also reachable without the VPN.
+          test "$(wrap -n curl --noproxy "*" -fsS --max-time 3 \
+            http://10.77.0.2:8080/source)" = 192.168.1.1
+          for flags in '-I wg1' '-n -I wg1' '-I wg1 -n' '-I missing-wrap0 -I wg1'; do
+            test "$(wrap $flags curl --noproxy "*" -fsS --max-time 3 \
+              http://10.77.0.2:8080/source)" = 10.77.0.1
+          done
+          wrap -I wg1 bash -euo pipefail -c '
+            test "$(dig +short +time=2 +tries=1 wg.test A)" = 10.77.0.2
+            test "$(printf vpn-udp | timeout 3 socat -t 1 -T 1 - \
+              UDP4:10.77.0.2:18082)" = vpn-udp
+          '
+          wrap -I wg1 ${pkgs.iproute2}/bin/ip route get 10.77.0.2 | grep -F ' dev wrap0 '
+          test "$(wrap -n curl --noproxy "*" -g -6 -fsS --max-time 3 \
+            http://[2001:db8:1::3]:8080/source)" = 2001:db8:1::1
+          if wrap -I wg1 curl --noproxy "*" -g -6 -fsS --max-time 3 \
+            http://[2001:db8:1::3]:8080/source; then
+            echo 'Unexpected IPv6 fallback from IPv4-only interface' >&2
+            exit 1
+          fi
+          for interface in missing-wrap0 ""; do
+            marker="$HOME/invalid-interface-command-ran"
+            test ! -e "$marker"
+            if wrap -I "$interface" touch "$marker"; then
+              echo 'Unexpected launch with an invalid outbound interface' >&2
+              exit 1
+            fi
+            test ! -e "$marker"
+          done
+        """))
+        # Add IPv6 without a link-local address, as on a typical WireGuard device.
+        machine.succeed(
+          "ip -6 address add fd77::1/128 dev wg1 nodad; "
+          f"wg set wg1 peer {peer_key} allowed-ips 10.77.0.2/32,fd77::2/128; "
+          "ip -6 route add fd77::2/128 dev wg1 metric 100; "
+          "ip -6 route add fd77::2/128 via 2001:db8:1::3 dev eth1 metric 10"
+        )
+        peer.succeed(
+          "ip -6 address add fd77::2/128 dev wg1 nodad; "
+          f"wg set wg1 peer {machine_key} allowed-ips 10.77.0.1/32,fd77::1/128; "
+          "ip -6 route add fd77::1/128 dev wg1"
+        )
+        peer.wait_for_unit("network-test-udp6.service")
+        machine.succeed(as_alice("""
+          test "$(wrap -n curl --noproxy "*" -g -6 -fsS --max-time 3 \
+            http://[fd77::2]:8080/source)" = 2001:db8:1::1
+          test "$(wrap -I wg1 curl --noproxy "*" -g -6 -fsS --max-time 3 \
+            http://[fd77::2]:8080/source)" = fd77::1
+          test "$(wrap -I wg1 curl --noproxy "*" -fsS --max-time 3 \
+            http://10.77.0.2:8080/source)" = 10.77.0.1
+          wrap -I wg1 bash -euo pipefail -c '
+            test "$(printf vpn-udp6 | timeout 3 socat -t 1 -T 1 - \
+              UDP6:[fd77::2]:18082)" = vpn-udp6
+          '
+        """))
+        # IPv6-only interfaces must retain DNS and must not fall back to host IPv4.
+        machine.succeed("ip -4 address del 10.77.0.1/32 dev wg1; printf 'nameserver fd77::2\\n' > /etc/resolv.conf")
+        machine.succeed(as_alice("""
+          wrap -I wg1 bash -euo pipefail -c '
+            test "$(dig +short +time=2 +tries=1 wg.test A)" = 10.77.0.2
+            test "$(curl --noproxy "*" -g -6 -fsS --max-time 3 \
+              http://[fd77::2]:8080/source)" = fd77::1
+          '
+          if wrap -I wg1 curl --noproxy "*" -4 -fsS --max-time 3 \
+            http://192.168.1.3:8080; then
+            echo 'Unexpected IPv4 fallback from IPv6-only interface' >&2
+            exit 1
+          fi
+        """))
+        machine.succeed("ip link set wg1 down")
+        machine.succeed(as_alice("""
+          # LAN access still works, but -I must not fall back to that route.
+          test "$(wrap -n curl --noproxy "*" -fsS --max-time 3 \
+            http://10.77.0.2:8080/source)" = 192.168.1.1
+          if wrap -I wg1 curl --noproxy "*" -fsS --max-time 3 \
+            http://10.77.0.2:8080/source; then
+            echo 'Unexpected fallback from down WireGuard interface' >&2
+            exit 1
+          fi
+        """))
+      finally:
+        machine.succeed("cat /tmp/wrap-host-resolv.conf > /etc/resolv.conf; ip link del wg1; rm /tmp/wrap-wg.key /tmp/wrap-host-resolv.conf")
+        peer.succeed("ip link del wg1; rm /tmp/wrap-wg.key")
 
     with subtest("Audio sockets visible only with -a"):
       machine.succeed(as_alice("""
