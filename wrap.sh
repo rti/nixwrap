@@ -185,7 +185,7 @@ mount_readonly_paths() {
 
     # A symlink needs both its name and target supplied by read-only mounts.
     if path_is_covered "$p" "${readonly_mounts[@]}" &&
-       path_is_covered "$resolved" "${readonly_mounts[@]}"; then
+      path_is_covered "$resolved" "${readonly_mounts[@]}"; then
       continue
     fi
 
