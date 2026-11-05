@@ -27,6 +27,7 @@
       arguments ? [ ],
       home ? null,
       shareCwd ? false,
+      hostPorts ? [ ],
       mounts ? {
         writable = [ ];
         readOnly = [ ];
@@ -62,6 +63,7 @@
         (map (path: "-w ${escapePath path}") (mounts.writable or [ ]))
         ++ (map (path: "-r ${escapePath path}") (mounts.readOnly or [ ]))
         ++ (map (capability: capabilityFlags.${capability}) enabledCapabilities)
+        ++ (map (port: "-P ${toString port}") hostPorts)
         ++ (map (key: "-e ${pkgs.lib.escapeShellArg key}") (builtins.attrNames environment))
         ++ pkgs.lib.optional (!shareCwd) "-p"
         ++ pkgs.lib.optional (home != null) "-H ${escapePath home}";
@@ -72,6 +74,10 @@
       );
       command = pkgs.lib.escapeShellArgs ([ "${package}/bin/${executable}" ] ++ arguments);
     in
+    assert builtins.all (port: builtins.isInt port && port >= 1 && port <= 65535) hostPorts;
+    assert hostPorts == [ ] || (
+      (capabilities.network or false) && !(capabilities.hostNetwork or false)
+    );
     assert builtins.all (capability: builtins.hasAttr capability capabilityFlags) (
       builtins.attrNames capabilities
     );

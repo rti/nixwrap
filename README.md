@@ -103,6 +103,7 @@ By default, the imperative `wrap` command will:
 ```
   -d       Allow Desktop access, Wayland, X11, and rendering hardware.
   -n       Allow Network access, without sharing host loopback or abstract sockets.
+  -P PORT  With -n, allow TCP access to this host loopback port; repeatable.
   -N       Keep the caller's network, including loopback and abstract sockets.
   -a       Allow Audio access.
   -c       Allow Camera access.
@@ -155,6 +156,7 @@ The `lib.mkWrap` function takes the following arguments.
 | `arguments` | Fixed arguments before those supplied at launch. Defaults to `[]`. |
 | `home` | Host backing directory to create if needed and mount writable at the caller's HOME inside the sandbox. The HOME value does not change. Omit to keep the default isolated home. |
 | `shareCwd` | Mount the launch-time working directory writable, subject to wrap's protected-path rules. Defaults to `false`. Startup preserves the cwd if it exists inside the sandbox, otherwise falling back to HOME. |
+| `hostPorts` | Host loopback TCP ports accessible at the same `127.0.0.1` port inside the sandbox. Defaults to `[]`. Requires `capabilities.network = true` and `hostNetwork` disabled. |
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
 | `capabilities` | Boolean attributes: `network`, `hostNetwork`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. `network` selects isolated pasta networking (`-n`); `hostNetwork` retains the caller's network (`-N`) and takes precedence over `network`. |

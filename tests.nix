@@ -27,6 +27,13 @@ pkgs.testers.nixosTest {
         executable = "bash";
       })
       (mkWrap {
+        name = "profile-test-host-ports";
+        package = pkgs.bash;
+        executable = "bash";
+        capabilities.network = true;
+        hostPorts = [ 18080 ];
+      })
+      (mkWrap {
         name = "profile-test-persistent";
         package = pkgs.bash;
         executable = "bash";
@@ -54,10 +61,14 @@ pkgs.testers.nixosTest {
     ];
 
     # Host echo services are positive controls for the sandbox isolation checks.
+    # TCP 18080: explicitly allowed by profile-test-host-ports.
+    # TCP 18083: left blocked unless a second -P is supplied.
+    # UDP 18081 and the abstract socket must not be exposed by TCP forwarding.
     systemd.services.network-test-host-sockets.script = ''
       ${pkgs.socat}/bin/socat ABSTRACT-LISTEN:wrap-host-abstract,fork EXEC:${pkgs.coreutils}/bin/cat &
       ${pkgs.socat}/bin/socat TCP4-LISTEN:18080,reuseaddr,fork EXEC:${pkgs.coreutils}/bin/cat &
       ${pkgs.socat}/bin/socat TCP6-LISTEN:18080,bind=::1,ipv6only=1,reuseaddr,fork EXEC:${pkgs.coreutils}/bin/cat &
+      ${pkgs.socat}/bin/socat TCP4-LISTEN:18083,bind=127.0.0.1,reuseaddr,fork EXEC:${pkgs.coreutils}/bin/cat &
       # Keep accepting UDP clients with different source ports between probes.
       ${pkgs.nmap}/bin/ncat -u -l -k 127.0.0.1 18081 --exec ${pkgs.coreutils}/bin/cat &
       wait
@@ -633,6 +644,7 @@ pkgs.testers.nixosTest {
         "TCP4:127.0.0.1:18080 "
         "'TCP6:[::1]:18080' "
         "TCP4:192.168.1.1:18080 "
+        "TCP4:127.0.0.1:18083 "
         "UDP4:127.0.0.1:18081"
       )
       reachable_host_sockets = """
@@ -712,6 +724,54 @@ pkgs.testers.nixosTest {
           echo "Inner -N sandbox could not reach the outer loopback server" >&2
           exit 1
         '
+      """))
+
+    with subtest("CLI and mkWrap expose only the explicitly allowed host TCP port"):
+      machine.succeed(as_alice("""
+        # Exercise CLI flags and the generated mkWrap launcher against the same
+        # allowlist contract.
+        check_host_port_access() {
+          "$@" -euo pipefail -c '
+            # The selected port forwards to the host service, not a sandbox server.
+            reply="$(printf allowed | socat -T 1 - TCP4:127.0.0.1:18080)"
+            test "$reply" = allowed
+            # An existing but unlisted TCP listener must remain unreachable.
+            if timeout 2 socat -T 1 - TCP4:127.0.0.1:18083 </dev/null; then
+              echo "Unexpected access to an unlisted host port" >&2
+              exit 1
+            fi
+            # A TCP exception must not expose the host UDP listener.
+            reply="$(printf blocked | socat -t 1 -T 1 - UDP4:127.0.0.1:18081 || true)"
+            test -z "$reply"
+          '
+        }
+        check_host_port_access wrap -n -P 18080 bash
+        check_host_port_access profile-test-host-ports
+      """))
+
+    with subtest("Repeated -P options allow both selected host TCP ports"):
+      machine.succeed(as_alice("""
+        wrap -n -P 18080 -P 18083 bash -euo pipefail -c '
+          for port in 18080 18083; do
+            reply="$(printf repeated | socat -T 1 - TCP4:127.0.0.1:$port)"
+            test "$reply" = repeated
+          done
+        '
+      """))
+
+    with subtest("-P rejects invalid ports and non-pasta network modes"):
+      machine.succeed(as_alice("""
+        # Reject out-of-range numbers and pasta's broader forwarding syntax:
+        # the CLI accepts individual ports, never ranges, lists, or auto mode.
+        for port in 0 65536 -1 auto 80,81; do
+          if wrap -n -P "$port" true; then
+            echo "Unexpected acceptance of invalid host port: $port" >&2
+            exit 1
+          fi
+        done
+        # Port exceptions are meaningful only in the isolated pasta mode.
+        ! wrap -P 18080 true
+        ! wrap -N -P 18080 true
       """))
 
     machine.succeed("systemctl stop network-test-host-sockets.service")
