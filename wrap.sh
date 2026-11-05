@@ -121,6 +121,7 @@ Usage: wrap [OPTIONS] [-- BWRAP_ARGS] PROGRAM_TO_WRAP_WITH_ARGS
 OPTIONS:
   -d       Allow Desktop access, Wayland, X11, and rendering hardware.
   -n       Allow Network access, without sharing host loopback or abstract sockets.
+  -N       Keep the caller's network, including loopback and abstract sockets.
   -a       Allow Audio access.
   -c       Allow Camera access.
   -b       Allow DBus access.
@@ -215,7 +216,7 @@ network=0
 explicit_mounts=()
 xauth_src=""
 
-while getopts "r:w:e:H:abcdfhnpuv" opt; do
+while getopts "r:w:e:H:abcdfhnNpuv" opt; do
   case "$opt" in
 
   # Collect explicit mounts; apply them after persistent home storage.
@@ -310,11 +311,9 @@ while getopts "r:w:e:H:abcdfhnpuv" opt; do
     env_vars+=("${env_vars_desktop[@]}")
     ;;
 
-  # grant network access
-  n)
-    network=1
-    bwrap_opts+=(--ro-bind /etc/ssl /etc/ssl)
-    bwrap_opts+=(--ro-bind /etc/static/ssl /etc/static/ssl)
+  # Select isolated or inherited networking; the last option wins.
+  n | N)
+    network="$opt"
     ;;
 
   # grant audio access
@@ -448,10 +447,17 @@ for e in "${env_vars[@]}"; do
 done
 bwrap_opts+=(--setenv HOME "$HOME")
 
-# pasta owns the outer network namespace; bwrap must retain it, not the host's.
-# Disable automatic forwarding in both directions and gateway-to-host mapping.
+# Both network modes use the caller's certificates.
+if [[ "$network" != 0 ]]; then
+  bwrap_opts+=(--ro-bind /etc/ssl /etc/ssl)
+  bwrap_opts+=(--ro-bind /etc/static/ssl /etc/static/ssl)
+fi
+
+# Only -n starts pasta; -N directly retains the caller's network namespace.
 pasta_launch=()
-if [[ $network -eq 1 ]]; then
+if [[ "$network" == N ]]; then
+  bwrap_opts+=(--share-net --ro-bind /etc/resolv.conf /etc/resolv.conf)
+elif [[ "$network" == n ]]; then
   IFS= read -r sandbox_hostname </proc/sys/kernel/hostname
   sandbox_hostname+="-wrap"
   bwrap_opts+=(--hostname "$sandbox_hostname")

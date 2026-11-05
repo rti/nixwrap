@@ -53,11 +53,13 @@ pkgs.testers.nixosTest {
       })
     ];
 
+    # Host echo services are positive controls for the sandbox isolation checks.
     systemd.services.network-test-host-sockets.script = ''
       ${pkgs.socat}/bin/socat ABSTRACT-LISTEN:wrap-host-abstract,fork EXEC:${pkgs.coreutils}/bin/cat &
       ${pkgs.socat}/bin/socat TCP4-LISTEN:18080,reuseaddr,fork EXEC:${pkgs.coreutils}/bin/cat &
       ${pkgs.socat}/bin/socat TCP6-LISTEN:18080,bind=::1,ipv6only=1,reuseaddr,fork EXEC:${pkgs.coreutils}/bin/cat &
-      ${pkgs.socat}/bin/socat UDP4-RECVFROM:18081,bind=127.0.0.1,fork EXEC:${pkgs.coreutils}/bin/cat &
+      # Keep accepting UDP clients with different source ports between probes.
+      ${pkgs.nmap}/bin/ncat -u -l -k 127.0.0.1 18081 --exec ${pkgs.coreutils}/bin/cat &
       wait
     '';
 
@@ -620,7 +622,7 @@ pkgs.testers.nixosTest {
         wrap -n ${pkgs.iproute2}/bin/ip route get 192.168.1.3 | grep -F ' dev wrap0 '
       """))
 
-    with subtest("pasta allows outbound TCP and DNS without exposing host sockets"):
+    with subtest("Host socket fixtures respond before sandbox isolation checks"):
       peer.wait_for_unit("nginx.service")
       peer.wait_for_unit("dnsmasq.service")
       peer.wait_for_open_port(8080)
@@ -648,6 +650,16 @@ pkgs.testers.nixosTest {
         "bash -s <<'PROBE'\n" + reachable_host_sockets + "\nPROBE"
       ), timeout=15)
 
+    with subtest("-N inherits host sockets and overrides an earlier -n"):
+      # Reuse the positive-control probe inside the inherited network namespace.
+      for flags in ["-N", "-n -N"]:
+        machine.succeed(as_alice(
+          "wrap " + flags + " bash -s <<'PROBE'\n" + reachable_host_sockets + "\nPROBE"
+        ))
+
+    with subtest("-n isolates host sockets and overrides an earlier -N"):
+      # A failed connection is expected; only a host echo indicates a leak.
+
       blocked_host_sockets = """
         set -euo pipefail
         for address in """ + host_socket_addresses + """; do
@@ -658,13 +670,15 @@ pkgs.testers.nixosTest {
           }
         done
       """
-      for flags in ["-n", "-n -n"]:
+      # Repeating -n must not accidentally enable pasta's automatic forwarding.
+      for flags in ["-n", "-n -n", "-N -n"]:
         machine.succeed(as_alice(
           "wrap " + flags + " bash -s <<'PROBE'\n" + blocked_host_sockets + "\nPROBE"
         ))
 
+    with subtest("Both network modes support outbound TCP and DNS"):
       machine.succeed(as_alice("""
-        for flags in '-n' '-n -n'; do
+        for flags in '-n' '-n -n' '-N' '-n -N' '-N -n'; do
           wrap $flags bash -euo pipefail -c '
             test "$(dig +short +time=2 +tries=1 network.test A)" = 192.168.1.3
             test "$(curl --noproxy "*" --fail --silent --show-error --max-time 5 \
@@ -672,14 +686,35 @@ pkgs.testers.nixosTest {
           '
         done
 
-        # Without -n, even a numeric peer address must remain unreachable.
+        # With no network option, even a numeric address must remain unreachable.
         if wrap curl --noproxy "*" --fail --silent --show-error --max-time 2 \
           http://192.168.1.3:8080; then
           echo 'Unexpected outbound network access without -n' >&2
           exit 1
         fi
       """))
-      machine.succeed("systemctl stop network-test-host-sockets.service")
+
+    with subtest("Nested -N shares the outer sandbox's loopback"):
+      machine.succeed(as_alice("""
+        wrap -n bash -euo pipefail -c '
+          # The server lives in the outer pasta namespace, not on the host.
+          socat TCP4-LISTEN:18082,bind=127.0.0.1,reuseaddr,fork EXEC:cat &
+          server=$!
+          trap "kill $server" EXIT
+          # The listener starts asynchronously; retry only until it is ready.
+          for attempt in {1..30}; do
+            reply="$(printf nested | wrap -N socat -T 1 - TCP4:127.0.0.1:18082 || true)"
+            if [[ "$reply" = nested ]]; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+          echo "Inner -N sandbox could not reach the outer loopback server" >&2
+          exit 1
+        '
+      """))
+
+    machine.succeed("systemctl stop network-test-host-sockets.service")
 
     with subtest("Audio sockets visible only with -a"):
       machine.succeed(as_alice("""

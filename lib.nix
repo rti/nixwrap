@@ -47,14 +47,17 @@
       capabilityFlags = {
         desktop = "-d";
         network = "-n";
+        hostNetwork = "-N";
         audio = "-a";
         camera = "-c";
         dbus = "-b";
         userInfo = "-u";
       };
-      enabledCapabilities = builtins.filter (capability: capabilities.${capability} or false) (
-        builtins.attrNames capabilityFlags
-      );
+      enabledCapabilities = builtins.filter (
+        capability:
+        (capabilities.${capability} or false)
+        && (capability != "network" || !(capabilities.hostNetwork or false))
+      ) (builtins.attrNames capabilityFlags);
       wrapArguments =
         (map (path: "-w ${escapePath path}") (mounts.writable or [ ]))
         ++ (map (path: "-r ${escapePath path}") (mounts.readOnly or [ ]))

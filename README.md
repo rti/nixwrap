@@ -103,6 +103,7 @@ By default, the imperative `wrap` command will:
 ```
   -d       Allow Desktop access, Wayland, X11, and rendering hardware.
   -n       Allow Network access, without sharing host loopback or abstract sockets.
+  -N       Keep the caller's network, including loopback and abstract sockets.
   -a       Allow Audio access.
   -c       Allow Camera access.
   -b       Allow DBus access.
@@ -156,7 +157,7 @@ The `lib.mkWrap` function takes the following arguments.
 | `shareCwd` | Mount the launch-time working directory writable, subject to wrap's protected-path rules. Defaults to `false`. Startup preserves the cwd if it exists inside the sandbox, otherwise falling back to HOME. |
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
-| `capabilities` | Boolean attributes: `network`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. |
+| `capabilities` | Boolean attributes: `network`, `hostNetwork`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. `network` selects isolated pasta networking (`-n`); `hostNetwork` retains the caller's network (`-N`) and takes precedence over `network`. |
 | `environment` | Attribute set of variables: a value sets the variable; `null` passes through the caller's value. Defaults to `{}`. Set `home`, not `environment.HOME`, to select persistent home storage. |
 
 
