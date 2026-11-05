@@ -4,11 +4,22 @@
   mkWrap,
 }:
 
+let
+  # A file-valued root referencing another file exercises transitive closure sharing.
+  closureDependency = pkgs.writeText "closure-dependency" "closure-data";
+  closureRoot = pkgs.writeText "closure-root" "${closureDependency}";
+  unsharedPath = pkgs.writeText "unshared-store-path" "private-data";
+  # Same command name, different results: -s order must determine command lookup.
+  firstCommand = pkgs.writeShellScriptBin "closure-command" "printf first";
+  secondCommand = pkgs.writeShellScriptBin "closure-command" "printf second";
+in
 pkgs.testers.nixosTest {
   name = "mytest";
 
   nodes.machine = { config, pkgs, ... }: {
     system.stateVersion = "24.05";
+    # CLI-only fixtures must be registered in the guest store for nix-store queries.
+    virtualisation.additionalPaths = [ firstCommand secondCommand ];
     networking.dhcpcd.enable = false; # boots faster
     networking.defaultGateway = "192.168.1.3";
     networking.nameservers = [ "192.168.1.3" ];
@@ -25,6 +36,12 @@ pkgs.testers.nixosTest {
         name = "profile-test";
         package = pkgs.bash;
         executable = "bash";
+      })
+      (mkWrap {
+        name = "profile-test-closures";
+        package = pkgs.bash;
+        executable = "bash";
+        closures = [ closureRoot ];
       })
       (mkWrap {
         name = "profile-test-host-ports";
@@ -141,6 +158,50 @@ pkgs.testers.nixosTest {
         f"--command $'{script}'"
       )
 
+
+    with subtest("Store sharing defaults to full access; selected closures exclude other paths"):
+      machine.succeed(as_alice("""
+        # Positive control: the unrelated store path exists and is visible by default.
+        wrap -p ${pkgs.bash}/bin/bash -ec 'test -r ${unsharedPath}'
+        export NIX_PROFILES="${unsharedPath}"
+        # Select only bash and the data closure; dependencies stay readable,
+        # unrelated paths and Nix state stay hidden, and selected paths stay read-only.
+        wrap -p -s ${pkgs.bash} -s ${closureRoot} ${pkgs.bash}/bin/bash -ec '
+          test -r ${closureRoot}
+          test -r ${closureDependency}
+          test ! -e ${unsharedPath}
+          test ! -e /nix/var/nix
+          ! printf changed > ${closureRoot}
+        '
+        # The declarative launcher must enforce the same closure boundary.
+        profile-test-closures -ec '
+          test -r ${closureRoot}
+          test -r ${closureDependency}
+          test ! -e ${unsharedPath}
+          test ! -e /nix/var/nix
+        '
+        # An invalid root must fail rather than launch with incomplete sharing.
+        if wrap -p -s /does-not-exist ${pkgs.bash}/bin/bash -c true; then
+          echo "Invalid closure root unexpectedly succeeded" >&2
+          exit 1
+        fi
+      """))
+
+    with subtest("Explicit closure bin directories support command lookup in argument order"):
+      machine.succeed(as_alice("""
+        # Launch by bare name; reversing roots must reverse command precedence.
+        test "$(wrap -p -s ${firstCommand} -s ${secondCommand} closure-command)" = first
+        test "$(wrap -p -s ${secondCommand} -s ${firstCommand} closure-command)" = second
+        # Data-only roots have no bin directory and must not add a PATH entry.
+        wrap -p -s ${closureRoot} -s ${pkgs.bash} bash -ec '
+          test "$(command -v bash)" = ${pkgs.bash}/bin/bash
+          case ":$PATH:" in
+            *:${closureRoot}/bin:*) exit 1 ;;
+          esac
+        '
+        # mkWrap automatically includes its package's bin directory as well.
+        profile-test-closures -ec 'test "$(command -v bash)" = ${pkgs.bash}/bin/bash'
+      """))
 
     with subtest("Environment variable $HOME is always exposed"):
       machine.succeed(as_alice("""

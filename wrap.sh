@@ -82,7 +82,6 @@ env_vars_desktop=(
 
 # paths shared read only by default
 paths_general=(
-  /nix
   /etc/nix
   /etc/static/nix
 
@@ -130,6 +129,7 @@ OPTIONS:
   -e VAR   Allow env var VAR access.
   -r PATH  Mount PATH into sandbox in read-only mode.
   -w PATH  Mount PATH into sandbox in read write mode.
+  -s PATH  Share PATH's Nix runtime closure read-only instead of all of /nix and NIX_PROFILES.
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
            HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
   -v       Verbose output for debugging.
@@ -216,10 +216,16 @@ home_source=""
 network=0
 host_ports=""
 explicit_mounts=()
+store_roots=()
+store_bin_path=""
 xauth_src=""
 
-while getopts "r:w:e:H:P:abcdfhnNpuv" opt; do
+while getopts "r:w:s:e:H:P:abcdfhnNpuv" opt; do
   case "$opt" in
+
+  s)
+    store_roots+=("$OPTARG")
+    ;;
 
   # Collect explicit mounts; apply them after persistent home storage.
   r | w)
@@ -409,6 +415,22 @@ bound_paths=()
 readonly_mounts=()
 
 # 1. General defaults; retain standalone aliases such as /bin.
+if (( ${#store_roots[@]} )); then
+  # Query before launching so an invalid root cannot silently yield a partial sandbox.
+  nix-store --query --requisites "${store_roots[@]}" >"$TMPDIR/store-paths"
+  while IFS= read -r store_path; do
+    bwrap_opts+=(--ro-bind "$store_path" "$store_path")
+  done <"$TMPDIR/store-paths"
+  # Only explicit roots contribute commands, in -s order; leave the host PATH alone.
+  for store_root in "${store_roots[@]}"; do
+    store_root="$(readlink -f -- "$store_root")"
+    if [[ -d "$store_root/bin" ]]; then
+      store_bin_path+="${store_bin_path:+:}$store_root/bin"
+    fi
+  done
+else
+  mount_readonly_paths /nix
+fi
 mount_readonly_paths "${paths_general[@]}"
 
 # 2. Persistent home storage, without changing HOME.
@@ -428,7 +450,7 @@ fi
 
 # 4. Profiles must survive home/cwd overlays and remain read-only by default.
 readonly_paths=()
-if [ -v NIX_PROFILES ]; then
+if (( ${#store_roots[@]} == 0 )) && [ -v NIX_PROFILES ]; then
   OLDIFS=$IFS
   IFS=" "
   for p in ${NIX_PROFILES}; do
@@ -455,6 +477,9 @@ for e in "${env_vars[@]}"; do
     bwrap_opts+=(--setenv "$e" "${!e}")
   fi
 done
+if [[ -n "$store_bin_path" ]]; then
+  bwrap_opts+=(--setenv PATH "${store_bin_path}${PATH:+:$PATH}")
+fi
 bwrap_opts+=(--setenv HOME "$HOME")
 
 if [[ -n "$host_ports" && "$network" != n ]]; then

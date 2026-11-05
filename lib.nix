@@ -28,6 +28,7 @@
       home ? null,
       shareCwd ? false,
       hostPorts ? [ ],
+      closures ? null,
       mounts ? {
         writable = [ ];
         readOnly = [ ];
@@ -62,6 +63,9 @@
       wrapArguments =
         (map (path: "-w ${escapePath path}") (mounts.writable or [ ]))
         ++ (map (path: "-r ${escapePath path}") (mounts.readOnly or [ ]))
+        ++ pkgs.lib.optionals (closures != null) (
+          map (path: "-s ${pkgs.lib.escapeShellArg (toString path)}") ([ package ] ++ closures)
+        )
         ++ (map (capability: capabilityFlags.${capability}) enabledCapabilities)
         ++ (map (port: "-P ${toString port}") hostPorts)
         ++ (map (key: "-e ${pkgs.lib.escapeShellArg key}") (builtins.attrNames environment))

@@ -23,6 +23,7 @@ stdenvNoCC.mkDerivation {
           lib.makeBinPath [
             pkgs.bubblewrap
             pkgs.passt
+            pkgs.nix
           ]
         }
   '';

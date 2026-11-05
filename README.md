@@ -90,7 +90,7 @@ By default, the imperative `wrap` command will:
 - ✅ Prevent access to user name information. (Use `-u` to allow.)
 - ❗ **Allow write access** to the **current working directory**. (Use `-p` to prevent.)
 - ❗ **Allow** read only access to all paths in `$NIX_PROFILES`.
-- ❗ **Allow** read only access to [nix store and config paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L92).
+- ❗ **Allow** read only access to the full Nix store and Nix configuration. (Use `-s` to share selected closures instead.)
 - ❗ **Allow** read only access to [common bin and lib paths](https://github.com/rti/nixwrap/blob/main/wrap.sh#L97).
 - ❗ **Allow** access to a set of [common environment variables](https://github.com/rti/nixwrap/blob/main/wrap.sh#L9).
 
@@ -112,6 +112,7 @@ By default, the imperative `wrap` command will:
   -e VAR   Allow env var VAR access.
   -r PATH  Mount PATH into sandbox in read-only mode.
   -w PATH  Mount PATH into sandbox in read write mode.
+  -s PATH  Share PATH's Nix runtime closure read-only instead of all of /nix and NIX_PROFILES.
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
   -v       Verbose output for debugging.
 ```
@@ -157,6 +158,7 @@ The `lib.mkWrap` function takes the following arguments.
 | `home` | Host backing directory to create if needed and mount writable at the caller's HOME inside the sandbox. The HOME value does not change. Omit to keep the default isolated home. |
 | `shareCwd` | Mount the launch-time working directory writable, subject to wrap's protected-path rules. Defaults to `false`. Startup preserves the cwd if it exists inside the sandbox, otherwise falling back to HOME. |
 | `hostPorts` | Host loopback TCP ports accessible at the same `127.0.0.1` port inside the sandbox. Defaults to `[]`. Requires `capabilities.network = true` and `hostNetwork` disabled. |
+| `closures` | Optional list of additional Nix packages/store paths to share with their runtime closures. Omit or set `null` to share all of `/nix` (default). Any list, including `[]`, enables closure-only sharing and automatically includes `package`; `$NIX_PROFILES` are not auto-mounted. |
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
 | `capabilities` | Boolean attributes: `network`, `hostNetwork`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. `network` selects isolated pasta networking (`-n`); `hostNetwork` retains the caller's network (`-N`) and takes precedence over `network`. |
