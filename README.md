@@ -105,6 +105,7 @@ By default, the imperative `wrap` command will:
   -n       Allow Network access, without sharing host loopback or abstract sockets.
   -P PORT  With -n, allow TCP access to this host loopback port; repeatable.
   -N       Keep the caller's network, including loopback and abstract sockets.
+  -I IFACE Allow Network access only through host interface IFACE (implies -n).
   -a       Allow Audio access.
   -c       Allow Camera access.
   -b       Allow DBus access.

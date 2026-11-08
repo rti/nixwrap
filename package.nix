@@ -24,6 +24,7 @@ stdenvNoCC.mkDerivation {
             pkgs.bubblewrap
             pkgs.passt
             pkgs.nix
+            pkgs.iproute2
           ]
         }
   '';
