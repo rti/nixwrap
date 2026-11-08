@@ -23,6 +23,8 @@ pkgs.testers.nixosTest {
     networking.dhcpcd.enable = false; # boots faster
     networking.defaultGateway = "192.168.1.3";
     networking.nameservers = [ "192.168.1.3" ];
+    # WireGuard's encrypted transport between machine and peer.
+    networking.firewall.allowedUDPPorts = [ 51820 ];
     # Match common NixOS: disable legacy TIOCSTI (nixpkgs common-config.nix)
     boot.kernel.sysctl = {
       "dev.tty.legacy_tiocsti" = 0;
@@ -32,6 +34,7 @@ pkgs.testers.nixosTest {
       pkgs.socat
       pkgs.curl
       pkgs.dig
+      pkgs.wireguard-tools
       (mkWrap {
         name = "profile-test";
         package = pkgs.bash;
@@ -100,6 +103,7 @@ pkgs.testers.nixosTest {
   nodes.peer = { pkgs, ... }: {
     system.stateVersion = "24.05";
     networking.dhcpcd.enable = false;
+    environment.systemPackages = [ pkgs.wireguard-tools ];
     networking.interfaces.eth1.ipv4.addresses = [
       {
         address = "192.168.1.3";
@@ -111,16 +115,36 @@ pkgs.testers.nixosTest {
       enable = true;
       resolveLocalQueries = false;
       settings = {
-        address = "/network.test/192.168.1.3";
-        interface = "eth1";
+        address = [
+          "/network.test/192.168.1.3"
+          "/wg.test/10.77.0.2"
+          "/wg.test/fd77::2"
+        ];
+        # wg1 is created at runtime; DNS must also answer over the tunnel.
+        interface = [ "eth1" "wg1" ];
       };
     };
-    networking.firewall.allowedUDPPorts = [ 53 ];
+    # DNS, WireGuard transport, and the IPv4/IPv6 UDP echo probes below.
+    networking.firewall.allowedUDPPorts = [ 53 51820 18082 ];
+    # Echo payloads on both address families to exercise UDP independently of TCP.
+    systemd.services.network-test-udp = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig.ExecStart = "${pkgs.socat}/bin/socat UDP4-RECVFROM:18082,fork EXEC:${pkgs.coreutils}/bin/cat";
+    };
+    systemd.services.network-test-udp6 = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig.ExecStart = "${pkgs.socat}/bin/socat UDP6-RECVFROM:18082,ipv6only=1,fork EXEC:${pkgs.coreutils}/bin/cat";
+    };
     services.nginx = {
       enable = true;
       virtualHosts."network.test" = {
-        listen = [{ addr = "0.0.0.0"; port = 8080; }];
+        listen = [
+          { addr = "0.0.0.0"; port = 8080; }
+          { addr = "[::]"; port = 8080; }
+        ];
         root = pkgs.writeTextDir "index.html" "outbound-network-ok";
+        # The observed client address distinguishes LAN egress from tunnel egress.
+        locations."/source".extraConfig = ''return 200 "$remote_addr";'';
       };
     };
   };
@@ -683,6 +707,45 @@ pkgs.testers.nixosTest {
           (echo 'Unexpected: /etc/ssl not visible with -n'; false)
       """))
 
+    with subtest("A custom resolv.conf overrides the default resolver read-only"):
+      peer.wait_for_unit("dnsmasq.service")
+      # Break the host resolver so success cannot come from the previous DNS
+      # configuration (including pasta's default DNS-forwarding upstream).
+      machine.succeed("cp -L /etc/resolv.conf /tmp/custom-dns-host-resolv.conf")
+      try:
+        machine.succeed("printf 'nameserver 192.0.2.53\\n' > /etc/resolv.conf")
+        machine.succeed(as_alice("""
+          resolver="$(mktemp)"
+          trap 'rm -f "$resolver"' EXIT
+          printf 'nameserver 192.168.1.3\\n' > "$resolver"
+
+          for mode in -n -N; do
+            # Negative control: the default resolver must fail in each mode.
+            # dig runs in a fresh process and does not consult an NSS cache.
+            if wrap "$mode" dig +short +time=1 +tries=1 network.test A; then
+              echo "Unexpected DNS success with the broken host resolver ($mode)" >&2
+              exit 1
+            fi
+
+            # Raw bwrap arguments follow wrap's generated mounts. Only this
+            # custom mount supplies the working resolver used by the query.
+            wrap "$mode" -- --ro-bind "$resolver" /etc/resolv.conf bash -euo pipefail -c '
+              test "$(cat /etc/resolv.conf)" = "nameserver 192.168.1.3"
+              test "$(dig +short +time=2 +tries=1 network.test A)" = 192.168.1.3
+              if printf "nameserver 127.0.0.1\\n" > /etc/resolv.conf; then
+                echo "Unexpected write access to the custom resolver" >&2
+                exit 1
+              fi
+            '
+          done
+        """))
+      finally:
+        # Restore shared guest state even if a control or assertion fails.
+        machine.succeed(
+          "cat /tmp/custom-dns-host-resolv.conf > /etc/resolv.conf; "
+          "rm /tmp/custom-dns-host-resolv.conf"
+        )
+
     with subtest("pasta sandbox uses the caller's hostname with a wrap suffix"):
       machine.succeed(as_alice("""
         expected="$(cat /proc/sys/kernel/hostname)-wrap"
@@ -836,6 +899,169 @@ pkgs.testers.nixosTest {
       """))
 
     machine.succeed("systemctl stop network-test-host-sockets.service")
+
+    # WireGuard models a VPN selected with -I while ordinary LAN access remains
+    # available. Verify that sandbox traffic uses the VPN, never silently falling
+    # back to the LAN when an address family is unavailable or the VPN goes down.
+    # Two paths reach the same peer:
+    #   LAN: machine eth1 192.168.1.1 / 2001:db8:1::1 -> peer .3 / ::3
+    #   VPN: machine wg1  10.77.0.1 / fd77::1         -> peer .2 / ::2
+    # Lower-metric LAN routes deliberately win without -I. Merely reaching the
+    # peer is not proof of binding: /source must report the VPN source address.
+    # Root sets up the tunnel; all wrap probes run as unprivileged alice.
+    # The shared fixture progresses from IPv4-only to dual-stack to IPv6-only,
+    # then down, so each phase below depends on the preceding configuration.
+    with subtest("-I binds unprivileged outbound traffic to WireGuard without fallback"):
+      machine.succeed("umask 077; wg genkey > /tmp/wrap-wg.key")
+      peer.succeed("umask 077; wg genkey > /tmp/wrap-wg.key")
+      machine_key = machine.succeed("wg pubkey < /tmp/wrap-wg.key").strip()
+      peer_key = peer.succeed("wg pubkey < /tmp/wrap-wg.key").strip()
+
+      # Start with /32 addresses and no default route on wg1, like a split VPN.
+      machine.succeed(
+        "ip link add wg1 type wireguard; "
+        "ip address add 10.77.0.1/32 dev wg1; "
+        f"wg set wg1 private-key /tmp/wrap-wg.key listen-port 51820 peer {peer_key} "
+        "endpoint 192.168.1.3:51820 allowed-ips 10.77.0.2/32; "
+        "ip link set wg1 up; "
+        "ip route add 10.77.0.2/32 dev wg1 metric 100; "
+        "ip route add 10.77.0.2/32 via 192.168.1.3 dev eth1 metric 10"
+      )
+      peer.succeed(
+        "ip link add wg1 type wireguard; "
+        "ip address add 10.77.0.2/32 dev wg1; "
+        f"wg set wg1 private-key /tmp/wrap-wg.key listen-port 51820 peer {machine_key} "
+        "endpoint 192.168.1.1:51820 allowed-ips 10.77.0.1/32; "
+        "ip link set wg1 up; "
+        "ip route add 10.77.0.1/32 dev wg1"
+      )
+      peer.wait_for_unit("network-test-udp.service")
+
+      # pasta forwards sandbox DNS to the host's configured resolver. Point it
+      # at the VPN peer so DNS probes also exercise the selected interface.
+      machine.succeed(
+        "cp -L /etc/resolv.conf /tmp/wrap-host-resolv.conf; "
+        "printf 'nameserver 10.77.0.2\\n' > /etc/resolv.conf"
+      )
+      try:
+        with subtest("IPv4-only -I selects VPN egress regardless of -n option order"):
+          machine.succeed(as_alice("""
+            # Positive control: ordinary -n reaches the VPN IP over the LAN.
+            test "$(wrap -n curl --noproxy "*" -fsS --max-time 3 \
+              http://10.77.0.2:8080/source)" = 192.168.1.1
+
+            # -I implies -n, survives a later -n, and the last -I wins.
+            # Intentional word splitting turns each flags string into arguments.
+            for flags in '-I wg1' '-n -I wg1' '-I wg1 -n' '-I missing-wrap0 -I wg1'; do
+              test "$(wrap $flags curl --noproxy "*" -fsS --max-time 3 \
+                http://10.77.0.2:8080/source)" = 10.77.0.1
+            done
+          """))
+
+        with subtest("IPv4-only -I supports DNS, UDP, and the sandbox route"):
+          machine.succeed(as_alice("""
+            wrap -I wg1 bash -euo pipefail -c '
+              test "$(dig +short +time=2 +tries=1 wg.test A)" = 10.77.0.2
+              test "$(printf vpn-udp | timeout 3 socat -t 1 -T 1 - \
+                UDP4:10.77.0.2:18082)" = vpn-udp
+            '
+            # The sandbox sees pasta's wrap0, not the host WireGuard device.
+            wrap -I wg1 ${pkgs.iproute2}/bin/ip route get 10.77.0.2 | grep -F ' dev wrap0 '
+          """))
+
+        with subtest("IPv4-only -I cannot fall back to the host IPv6 connection"):
+          machine.succeed(as_alice("""
+            # A working LAN IPv6 control makes failure meaningful.
+            test "$(wrap -n curl --noproxy "*" -g -6 -fsS --max-time 3 \
+              http://[2001:db8:1::3]:8080/source)" = 2001:db8:1::1
+            if wrap -I wg1 curl --noproxy "*" -g -6 -fsS --max-time 3 \
+              http://[2001:db8:1::3]:8080/source; then
+              echo 'Unexpected IPv6 fallback from IPv4-only interface' >&2
+              exit 1
+            fi
+          """))
+
+        with subtest("-I rejects missing and empty interfaces before launching the command"):
+          machine.succeed(as_alice("""
+            for interface in missing-wrap0 ""; do
+              # A failed exit alone would not prove that the payload never ran.
+              marker="$HOME/invalid-interface-command-ran"
+              test ! -e "$marker"
+              if wrap -I "$interface" touch "$marker"; then
+                echo 'Unexpected launch with an invalid outbound interface' >&2
+                exit 1
+              fi
+              test ! -e "$marker"
+            done
+          """))
+
+        with subtest("Dual-stack -I uses VPN source addresses for both families"):
+          # Add /128 IPv6 addresses without link-local addresses, as on a
+          # typical WireGuard device. Keep preferring the LAN route without -I.
+          machine.succeed(
+            "ip -6 address add fd77::1/128 dev wg1 nodad; "
+            f"wg set wg1 peer {peer_key} allowed-ips 10.77.0.2/32,fd77::2/128; "
+            "ip -6 route add fd77::2/128 dev wg1 metric 100; "
+            "ip -6 route add fd77::2/128 via 2001:db8:1::3 dev eth1 metric 10"
+          )
+          peer.succeed(
+            "ip -6 address add fd77::2/128 dev wg1 nodad; "
+            f"wg set wg1 peer {machine_key} allowed-ips 10.77.0.1/32,fd77::1/128; "
+            "ip -6 route add fd77::1/128 dev wg1"
+          )
+          peer.wait_for_unit("network-test-udp6.service")
+          machine.succeed(as_alice("""
+            test "$(wrap -n curl --noproxy "*" -g -6 -fsS --max-time 3 \
+              http://[fd77::2]:8080/source)" = 2001:db8:1::1
+            test "$(wrap -I wg1 curl --noproxy "*" -g -6 -fsS --max-time 3 \
+              http://[fd77::2]:8080/source)" = fd77::1
+            test "$(wrap -I wg1 curl --noproxy "*" -fsS --max-time 3 \
+              http://10.77.0.2:8080/source)" = 10.77.0.1
+            wrap -I wg1 bash -euo pipefail -c '
+              test "$(printf vpn-udp6 | timeout 3 socat -t 1 -T 1 - \
+                UDP6:[fd77::2]:18082)" = vpn-udp6
+            '
+          """))
+
+        with subtest("IPv6-only -I retains DNS and TCP without host IPv4 fallback"):
+          # Remove only the client's VPN IPv4 address; the LAN remains usable.
+          machine.succeed(
+            "ip -4 address del 10.77.0.1/32 dev wg1; "
+            "printf 'nameserver fd77::2\\n' > /etc/resolv.conf"
+          )
+          machine.succeed(as_alice("""
+            wrap -I wg1 bash -euo pipefail -c '
+              # An A record can be resolved over an IPv6 DNS transport.
+              test "$(dig +short +time=2 +tries=1 wg.test A)" = 10.77.0.2
+              test "$(curl --noproxy "*" -g -6 -fsS --max-time 3 \
+                http://[fd77::2]:8080/source)" = fd77::1
+            '
+            if wrap -I wg1 curl --noproxy "*" -4 -fsS --max-time 3 \
+              http://192.168.1.3:8080; then
+              echo 'Unexpected IPv4 fallback from IPv6-only interface' >&2
+              exit 1
+            fi
+          """))
+
+        with subtest("A down VPN cannot fall back to the still-working LAN"):
+          machine.succeed("ip link set wg1 down")
+          machine.succeed(as_alice("""
+            test "$(wrap -n curl --noproxy "*" -fsS --max-time 3 \
+              http://10.77.0.2:8080/source)" = 192.168.1.1
+            if wrap -I wg1 curl --noproxy "*" -fsS --max-time 3 \
+              http://10.77.0.2:8080/source; then
+              echo 'Unexpected fallback from down WireGuard interface' >&2
+              exit 1
+            fi
+          """))
+      finally:
+        # Restore the shared host resolver and remove the runtime VPN fixture.
+        machine.succeed(
+          "cat /tmp/wrap-host-resolv.conf > /etc/resolv.conf; "
+          "ip link del wg1; "
+          "rm /tmp/wrap-wg.key /tmp/wrap-host-resolv.conf"
+        )
+        peer.succeed("ip link del wg1; rm /tmp/wrap-wg.key")
 
     with subtest("Audio sockets visible only with -a"):
       machine.succeed(as_alice("""

@@ -122,6 +122,7 @@ OPTIONS:
   -n       Allow Network access, without sharing host loopback or abstract sockets.
   -N       Keep the caller's network, including loopback and abstract sockets.
   -P PORT  With -n, allow TCP access to this host loopback port; repeatable.
+  -I IFACE Allow Network access only through host interface IFACE (implies -n).
   -a       Allow Audio access.
   -c       Allow Camera access.
   -b       Allow DBus access.
@@ -215,12 +216,13 @@ force_share_cwd=0
 home_source=""
 network=0
 host_ports=""
+outbound_interface=""
 explicit_mounts=()
 store_roots=()
 store_bin_path=""
 xauth_src=""
 
-while getopts "r:w:s:e:H:P:abcdfhnNpuv" opt; do
+while getopts "r:w:s:e:H:P:I:abcdfhnNpuv" opt; do
   case "$opt" in
 
   s)
@@ -320,8 +322,16 @@ while getopts "r:w:s:e:H:P:abcdfhnNpuv" opt; do
     ;;
 
   # Select isolated or inherited networking; the last option wins.
-  n | N)
+  n | N | I)
     network="$opt"
+    if [[ "$opt" == I ]]; then
+      network=n
+      if [[ -z "$OPTARG" ]]; then
+        echo "Error: -I requires a non-empty interface name." >&2
+        exit 1
+      fi
+      outbound_interface="$OPTARG"
+    fi
     ;;
 
   P)
@@ -501,13 +511,36 @@ elif [[ "$network" == n ]]; then
   IFS= read -r sandbox_hostname </proc/sys/kernel/hostname
   sandbox_hostname+="-wrap"
   bwrap_opts+=(--hostname "$sandbox_hostname")
-  printf 'nameserver 169.254.1.1\n' >"$TMPDIR/resolv.conf"
+  dns_forward=169.254.1.1
   bwrap_opts+=(--share-net --ro-bind "$TMPDIR/resolv.conf" /etc/resolv.conf)
   # pasta maps the caller to root; restore its numeric identity in an inner userns.
   bwrap_opts+=(--uid "$UID" --gid "$(id -g)")
   pasta_launch=(pasta --config-net --ns-ifname wrap0 --no-map-gw --hostname "$sandbox_hostname"
     --tcp-ports none --udp-ports none --tcp-ns "${host_ports:-none}" --udp-ns none
-    --dns-forward 169.254.1.1 --)
+    --dns-forward "$dns_forward")
+  if [[ -n "$outbound_interface" ]]; then
+    ipv4_addresses="$(ip -o -4 address show dev "$outbound_interface")"
+    ipv6_addresses="$(ip -o -6 address show dev "$outbound_interface" scope global)"
+    if [[ -n "$ipv4_addresses" ]]; then
+      # A link-local guest subnet keeps the resolver reachable with /32 host addresses.
+      pasta_launch+=(--outbound-if4 "$outbound_interface"
+        --address 169.254.2.1/24 --gateway 169.254.2.2)
+    fi
+    if [[ -n "$ipv6_addresses" ]]; then
+      pasta_launch+=(--outbound-if6 "$outbound_interface" --gateway fe80::1)
+    fi
+    if [[ -z "$ipv6_addresses" && -n "$ipv4_addresses" ]]; then
+      pasta_launch+=(--ipv4-only)
+    elif [[ -z "$ipv4_addresses" && -n "$ipv6_addresses" ]]; then
+      dns_forward=fd00::1
+      pasta_launch+=(--ipv6-only --dns-forward "$dns_forward")
+    elif [[ -z "$ipv4_addresses" && -z "$ipv6_addresses" ]]; then
+      echo "Error: interface $outbound_interface has no usable IP addresses." >&2
+      exit 1
+    fi
+  fi
+  printf 'nameserver %s\n' "$dns_forward" >"$TMPDIR/resolv.conf"
+  pasta_launch+=(--)
 fi
 
 # Finally: Launch it
