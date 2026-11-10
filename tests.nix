@@ -12,6 +12,20 @@ let
   # Same command name, different results: -s order must determine command lookup.
   firstCommand = pkgs.writeShellScriptBin "closure-command" "printf first";
   secondCommand = pkgs.writeShellScriptBin "closure-command" "printf second";
+  # A persistent client keeps the user manager subscribed to broadcast signals.
+  dbusPython = pkgs.python3.withPackages (ps: [ ps.dbus-python ]);
+  dbusCaller = mkWrap {
+    name = "profile-test-dbus";
+    package = pkgs.bash;
+    executable = "bash";
+    dbus.call = [ "org.freedesktop.systemd1=org.freedesktop.DBus.Properties.Get@/org/freedesktop/systemd1/unit/dbus_2eservice" ];
+  };
+  hostDbusCaller = mkWrap {
+    name = "profile-test-host-dbus";
+    package = pkgs.bash;
+    executable = "bash";
+    capabilities.hostDbus = true;
+  };
 in
 pkgs.testers.nixosTest {
   name = "mytest";
@@ -31,6 +45,13 @@ pkgs.testers.nixosTest {
     };
     environment.systemPackages = [
       wrap
+      dbusCaller
+      hostDbusCaller
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.gnugrep
+      pkgs.dbus
+      pkgs.systemd
       pkgs.socat
       pkgs.curl
       pkgs.dig
@@ -94,9 +115,20 @@ pkgs.testers.nixosTest {
       wait
     '';
 
+    services.dbus.enable = true;
+    services.dbus.implementation = "dbus";
+
+    # A stock echo process supplies the unrelated name used by filtering tests.
+    systemd.user.services.nixwrap-hidden.serviceConfig = {
+      Type = "dbus";
+      BusName = "org.example.Hidden";
+      ExecStart = "${pkgs.dbus}/bin/dbus-test-tool echo --name=org.example.Hidden";
+    };
+
     users.users.alice = {
       isNormalUser = true;
       createHome = true;
+      linger = true;
     };
   };
 
@@ -182,6 +214,405 @@ pkgs.testers.nixosTest {
         f"--command $'{script}'"
       )
 
+
+    from shlex import quote
+    from textwrap import dedent
+
+    # Use Alice's real user bus. The unrelated echo service is stateless and
+    # stays running; only clients and names created by a subtest need cleanup.
+    alice_uid = machine.succeed("id -u alice").strip()
+    machine.wait_for_unit(f"user@{alice_uid}.service")
+    machine.succeed(as_alice(
+      "XDG_RUNTIME_DIR=/run/user/$(id -u) "
+      "systemctl --user start dbus.service nixwrap-hidden.service"
+    ))
+
+    def as_dbus_user(script):
+      """Set the host session environment and clean up this subtest's resources."""
+      return as_alice(dedent("""
+        export XDG_RUNTIME_DIR=/run/user/$(id -u)
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+
+        work=$(mktemp -d)
+        cleanup() {
+          for pid in $(jobs -pr); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
+          rm -rf "$work"
+        }
+        trap cleanup EXIT
+      """) + dedent(script))
+
+    # Scripts stay local to each case. quote() passes them as command arguments,
+    # leaving stdin free. Python joins backslash-continued shell command lines
+    # before as_alice hands the script through its outer shell quoting.
+
+    with subtest("Without D-Bus options applications cannot use the host session bus"):
+      sandbox_script = dedent("""
+        set -euo pipefail
+
+        [[ ! -v DBUS_SESSION_BUS_ADDRESS ]]
+        if busctl --address="unix:path=/run/user/$(id -u)/bus" --timeout=3 call \
+            org.example.Hidden /org/example/Hidden org.example.Hidden Ping; then
+          echo "Host session bus accessible without permission" >&2
+          exit 1
+        fi
+      """)
+
+      machine.succeed(as_dbus_user("""
+        # The host call works. The sandbox must also block a client that knows
+        # the socket path and does not need DBUS_SESSION_BUS_ADDRESS.
+        busctl --user call \
+          org.example.Hidden /org/example/Hidden org.example.Hidden Ping
+
+      """ + "wrap -p bash -c " + quote(sandbox_script)))
+
+    with subtest("-B and capabilities.hostDbus access the host session bus directly"):
+      # Preserve the real address, and call two unrelated services.
+      sandbox_script = dedent("""
+        set -euo pipefail
+        [[ $DBUS_SESSION_BUS_ADDRESS == unix:path=/run/user/$(id -u)/bus ]]
+
+        busctl --user --timeout=3 call \
+          org.example.Hidden /org/example/Hidden org.example.Hidden Ping
+
+        unit=$(busctl --user call \
+          org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+          org.freedesktop.systemd1.Manager GetUnit s dbus.service)
+        [[ $unit == 'o "/org/freedesktop/systemd1/unit/dbus_2eservice"' ]]
+      """)
+
+      for launcher in [
+        "wrap -p -B bash",
+        "${hostDbusCaller}/bin/profile-test-host-dbus",
+      ]:
+        machine.succeed(as_dbus_user(launcher + " -c " + quote(sandbox_script)))
+
+    with subtest("-b see discovers a service without allowing calls or ownership"):
+      sandbox_script = dedent("""
+        set -euo pipefail
+
+        owner=$(busctl --user call \
+          org.freedesktop.DBus /org/freedesktop/DBus \
+          org.freedesktop.DBus NameHasOwner s org.freedesktop.systemd1)
+        [[ $owner == 'b true' ]]
+
+        names=$(busctl --user call \
+          org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ListNames)
+        [[ $names == *org.freedesktop.systemd1* && $names != *org.example.Hidden* ]]
+
+        # Discovery is not permission to call the service or register a name.
+        if output=$(busctl --user call \
+            org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+            org.freedesktop.systemd1.Manager GetUnit s dbus.service 2>&1); then
+          exit 1
+        fi
+        [[ $output == *"Access denied"* ]]
+
+        if output=$(busctl --user call \
+            org.freedesktop.DBus /org/freedesktop/DBus \
+            org.freedesktop.DBus RequestName su org.example.Unallowed 4 2>&1); then
+          exit 1
+        fi
+        [[ $output == *ServiceUnknown* ]]
+      """)
+
+      machine.succeed(as_dbus_user("""
+        # The method works on the host, so sandbox denial is a policy decision.
+        busctl --user call \
+          org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+          org.freedesktop.systemd1.Manager GetUnit s dbus.service
+
+      """ + "wrap -p -b see:org.freedesktop.systemd1 bash -c " + quote(sandbox_script)))
+
+    with subtest("-b call and dbus.call restrict method, interface, path and service"):
+      machine.succeed(as_dbus_user("""
+        # Every forbidden operation below is valid outside the sandbox.
+        busctl --user call org.freedesktop.systemd1 \
+          /org/freedesktop/systemd1/unit/dbus_2eservice \
+          org.freedesktop.DBus.Properties GetAll s org.freedesktop.systemd1.Unit
+        busctl --user call org.freedesktop.systemd1 \
+          /org/freedesktop/systemd1/unit/dbus_2eservice org.freedesktop.DBus.Peer Ping
+        busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+          org.freedesktop.DBus.Properties Get ss org.freedesktop.systemd1.Manager Version
+        busctl --user call \
+          org.example.Hidden /org/example/Hidden org.example.Hidden Ping
+      """))
+
+      # Share behavior checks, not fixtures or assertions hidden in a helper.
+      sandbox_script = dedent("""
+        set -euo pipefail
+
+        denied() {
+          local output
+          if output=$("$@" 2>&1); then
+            echo "Unexpectedly allowed: $*" >&2
+            return 1
+          fi
+          case "$output" in
+            *AccessDenied*|*ServiceUnknown*|*NameHasNoOwner*|*"Access denied"*) ;;
+            *) echo "$output" >&2; return 1 ;;
+          esac
+        }
+
+        id=$(busctl --user --timeout=3 call org.freedesktop.systemd1 \
+          /org/freedesktop/systemd1/unit/dbus_2eservice \
+          org.freedesktop.DBus.Properties Get ss org.freedesktop.systemd1.Unit Id)
+        [[ $id == 'v s "dbus.service"' ]]
+
+        # Change one part of the allowed call at a time.
+        denied busctl --user call org.freedesktop.systemd1 \
+          /org/freedesktop/systemd1/unit/dbus_2eservice \
+          org.freedesktop.DBus.Properties GetAll s org.freedesktop.systemd1.Unit
+        denied busctl --user call org.freedesktop.systemd1 \
+          /org/freedesktop/systemd1/unit/dbus_2eservice org.freedesktop.DBus.Peer Ping
+        denied busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+          org.freedesktop.DBus.Properties Get ss org.freedesktop.systemd1.Manager Version
+        denied busctl --user call \
+          org.example.Hidden /org/example/Hidden org.example.Hidden Ping
+      """)
+
+      for launcher in [
+        "wrap -p -b 'call:org.freedesktop.systemd1=org.freedesktop.DBus.Properties.Get@/org/freedesktop/systemd1/unit/dbus_2eservice' bash",
+        "${dbusCaller}/bin/profile-test-dbus",
+      ]:
+        machine.succeed(as_dbus_user(launcher + " -c " + quote(sandbox_script)))
+
+    with subtest("Repeated -b rules add permissions rather than replacing earlier rules"):
+      # Both methods must work in the same sandbox.
+      sandbox_script = dedent("""
+        set -euo pipefail
+
+        id=$(busctl --user call org.freedesktop.systemd1 \
+          /org/freedesktop/systemd1/unit/dbus_2eservice \
+          org.freedesktop.DBus.Properties Get ss org.freedesktop.systemd1.Unit Id)
+        [[ $id == 'v s "dbus.service"' ]]
+
+        unit=$(busctl --user call \
+          org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+          org.freedesktop.systemd1.Manager GetUnit s dbus.service)
+        [[ $unit == 'o "/org/freedesktop/systemd1/unit/dbus_2eservice"' ]]
+      """)
+
+      machine.succeed(as_dbus_user(
+        "wrap -p "
+        "-b 'call:org.freedesktop.systemd1=org.freedesktop.DBus.Properties.Get"
+        "@/org/freedesktop/systemd1/unit/dbus_2eservice' "
+        "-b 'call:org.freedesktop.systemd1=org.freedesktop.systemd1.Manager.GetUnit"
+        "@/org/freedesktop/systemd1' bash -c " + quote(sandbox_script)
+      ))
+
+    with subtest("-b talk permits reads and writes despite an additional narrow call rule"):
+      sandbox_script = dedent("""
+        set -euo pipefail
+
+        # Neither operation matches the GetUnit rule: talk remains authoritative.
+        id=$(busctl --user call org.freedesktop.systemd1 \
+          /org/freedesktop/systemd1/unit/dbus_2eservice \
+          org.freedesktop.DBus.Properties Get ss org.freedesktop.systemd1.Unit Id)
+        [[ $id == 'v s "dbus.service"' ]]
+        busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+          org.freedesktop.systemd1.Manager SetEnvironment as 1 NIXWRAP_DBUS_TEST=changed
+
+        # Broad access to the manager still grants no access to another service.
+        if output=$(busctl --user call \
+            org.example.Hidden /org/example/Hidden org.example.Hidden Ping 2>&1); then
+          exit 1
+        fi
+        [[ $output == *ServiceUnknown* || $output == *NameHasNoOwner* ]]
+        names=$(busctl --user call \
+          org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ListNames)
+        [[ $names != *org.example.Hidden* ]]
+      """)
+
+      machine.succeed(as_dbus_user("""
+        # Restore the test-specific manager variable even if an assertion fails.
+        restore_environment() {
+          busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+            org.freedesktop.systemd1.Manager UnsetEnvironment as 1 NIXWRAP_DBUS_TEST
+          cleanup
+        }
+        trap restore_environment EXIT
+        busctl --user call \
+          org.example.Hidden /org/example/Hidden org.example.Hidden Ping
+
+      """ +
+        "wrap -p -b talk:org.freedesktop.systemd1 "
+        "-b 'call:org.freedesktop.systemd1=org.freedesktop.systemd1.Manager.GetUnit"
+        "@/org/freedesktop/systemd1' bash -c " + quote(sandbox_script) + """
+
+        # Verify the write from outside the sandbox, not only its exit status.
+        [[ $(systemctl --user show-environment) == *NIXWRAP_DBUS_TEST=changed* ]]
+      """))
+
+    with subtest("-b own serves its selected name but cannot acquire other names"):
+      service = dedent("""
+        set -euo pipefail
+
+        # Ownership grants neither discovery nor ownership of unrelated names.
+        owner=$(busctl --user call \
+          org.freedesktop.DBus /org/freedesktop/DBus \
+          org.freedesktop.DBus NameHasOwner s org.freedesktop.systemd1)
+        [[ $owner == 'b false' ]]
+        if output=$(busctl --user call \
+            org.freedesktop.DBus /org/freedesktop/DBus \
+            org.freedesktop.DBus RequestName su org.example.Unallowed 4 2>&1); then
+          exit 1
+        fi
+        [[ $output == *ServiceUnknown* ]]
+
+        echo "$DBUS_SESSION_BUS_ADDRESS"
+        exec dbus-test-tool echo --name=org.example.Owned
+      """)
+
+      machine.succeed(as_dbus_user(
+        "wrap -p -b own:org.example.Owned bash -c "
+        + quote(service) + """ >"$work/address" &
+        service_pid=$!
+
+        for attempt in {1..100}; do
+          owner=$(busctl --user call \
+            org.freedesktop.DBus /org/freedesktop/DBus \
+            org.freedesktop.DBus NameHasOwner s org.example.Owned)
+          [[ $owner == 'b true' ]] && break
+          kill -0 "$service_pid"
+          sleep 0.05
+        done
+
+        # Host clients can call the application: own is not an inbound ACL.
+        busctl --user --timeout=3 call \
+          org.example.Owned /org/example/Owned org.example.Owned Ping
+
+        kill "$service_pid"
+        wait "$service_pid" || true
+        owner=$(busctl --user call \
+          org.freedesktop.DBus /org/freedesktop/DBus \
+          org.freedesktop.DBus NameHasOwner s org.example.Owned)
+        [[ $owner == 'b false' ]]
+
+        # Terminating the application also removes its proxy socket directory.
+        address=$(cat "$work/address")
+        socket=''${address#unix:path=}
+        [[ ! -e ''${socket%/*} ]]
+      """))
+
+    with subtest("-b broadcast filters signals independently of call permissions"):
+      # systemd emits signals only while a bus client stays subscribed.
+      # systemd-run may use the private manager socket, so it is not sufficient.
+      subscriber = dedent("""
+        import dbus, signal
+
+        bus = dbus.SessionBus()
+        bus.get_object(
+            "org.freedesktop.systemd1", "/org/freedesktop/systemd1"
+        ).Subscribe(dbus_interface="org.freedesktop.systemd1.Manager")
+        print("ready", flush=True)
+        signal.pause()
+      """)
+
+      machine.succeed(as_dbus_user("""
+        wait_for_log() {
+          for attempt in {1..100}; do
+            grep -q "$1" "$2" && return
+            sleep 0.05
+          done
+          cat "$2" >&2
+          return 1
+        }
+
+        # Observe the same unit creation with each permission. NameAcquired
+        # confirms each monitor is connected before we generate the event.
+        for mode in allowed member interface path see call talk; do
+          case $mode in
+            allowed)
+              rule='broadcast:org.freedesktop.systemd1=org.freedesktop.systemd1.Manager.UnitNew@/org/freedesktop/systemd1'
+              ;;
+            member)
+              rule='broadcast:org.freedesktop.systemd1=org.freedesktop.systemd1.Manager.UnitFilesChanged@/org/freedesktop/systemd1'
+              ;;
+            interface)
+              rule='broadcast:org.freedesktop.systemd1=org.freedesktop.DBus.Properties.UnitNew@/org/freedesktop/systemd1'
+              ;;
+            path)
+              rule='broadcast:org.freedesktop.systemd1=org.freedesktop.systemd1.Manager.UnitNew@/org/freedesktop/systemd1/unit/dbus_2eservice'
+              ;;
+            see) rule='see:org.freedesktop.systemd1' ;;
+            call) rule='call:org.freedesktop.systemd1=org.freedesktop.systemd1.Manager.*' ;;
+            talk) rule='talk:org.freedesktop.systemd1' ;;
+          esac
+
+          wrap -p -b "$rule" dbus-monitor --session \
+            "type='signal',interface='org.freedesktop.systemd1.Manager',arg0='nixwrap-signal.service'" \
+            >"$work/$mode" 2>&1 &
+          wait_for_log member=NameAcquired "$work/$mode"
+        done
+
+      """ + "${dbusPython}/bin/python3 -c " + quote(subscriber) + """ >"$work/subscribed" &
+        wait_for_log ready "$work/subscribed"
+
+        systemd-run --user --unit=nixwrap-signal --wait --collect ${pkgs.coreutils}/bin/true
+        wait_for_log 'member=UnitNew' "$work/allowed"
+        wait_for_log 'member=UnitRemoved' "$work/talk"
+        sleep 0.2
+
+        # The exact rule and talk both receive UnitNew. talk also receives
+        # UnitRemoved; mismatched rules, see and call receive neither signal.
+        for mode in allowed talk; do
+          [[ $(grep -c member=UnitNew "$work/$mode") -eq 1 ]]
+        done
+        for mode in member interface path see call; do
+          ! grep -q 'interface=org.freedesktop.systemd1.Manager;' "$work/$mode"
+        done
+      """))
+
+    with subtest("Filtered applications keep stdin and exit status and release their socket"):
+      machine.succeed(as_dbus_user("""
+        status=0
+        printf input | wrap -p -b see:org.freedesktop.systemd1 bash -ec '
+          [[ $(cat) == input ]]
+          echo "$DBUS_SESSION_BUS_ADDRESS"
+          exit 37
+        ' >"$work/exited-address" || status=$?
+        [[ $status -eq 37 ]]
+
+        # A normal application exit must clean up the proxy too.
+        address=$(cat "$work/exited-address")
+        [[ $address == unix:path=* ]]
+        socket=''${address#unix:path=}
+        [[ ! -e ''${socket%/*} ]]
+      """))
+
+    with subtest("Invalid D-Bus options fail without running the application"):
+      machine.succeed(as_dbus_user("""
+        rejected() {
+          local output status=0
+          output=$(wrap -p "$@" \
+            bash -c 'echo PAYLOAD_LAUNCHED >&2; exit 99' 2>&1) || status=$?
+          if [[ $status -eq 0 || $output == *PAYLOAD_LAUNCHED* ]]; then
+            echo "$output" >&2
+            return 1
+          fi
+        }
+
+        # Raw and filtered access are mutually exclusive, in either order.
+        rejected -B -b see:org.freedesktop.systemd1
+        rejected -b see:org.freedesktop.systemd1 -B
+
+        # Reject invalid native rules, missing separators and empty arguments.
+        rejected -b call:invalid-rule
+        for malformed in \
+            "" org.freedesktop.systemd1 call broadcast talk own see \
+            :rule unknown:rule Call:rule; do
+          rejected -b "$malformed"
+        done
+        for action in call broadcast talk own see; do
+          rejected -b "$action:"
+        done
+
+        # Opting in must fail closed when no host bus address is available.
+        unset DBUS_SESSION_BUS_ADDRESS
+        rejected -B
+        rejected -b see:org.freedesktop.systemd1
+      """))
 
     with subtest("Store sharing defaults to full access; selected closures exclude other paths"):
       machine.succeed(as_alice("""
@@ -1086,21 +1517,6 @@ pkgs.testers.nixosTest {
           (echo 'Unexpected: pipewire-0 not visible with -a'; false)
         wrap -a bash -c 'ls $XDG_RUNTIME_DIR/pipewire-0.lock' | grep 'pipewire-0.lock$' ||
           (echo 'Unexpected: pipewire-0.lock not visible with -a'; false)
-      """))
-
-    with subtest("DBus session socket visible only with -b"):
-      machine.succeed(as_alice("""
-        # Create a fake DBus session socket and export address
-        touch /tmp/dbus-sock
-        export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-sock"
-
-        # Without -b, it should not be visible
-        ! (wrap bash -c 'ls /tmp/dbus-sock') ||
-          (echo 'Unexpected: DBus socket visible without -b'; false)
-
-        # With -b, it should be visible
-        wrap -b bash -c 'ls /tmp/dbus-sock' | grep '/tmp/dbus-sock' ||
-          (echo 'Unexpected: DBus socket not visible with -b'; false)
       """))
 
     with subtest("Env var passthrough via -e and default stripping"):

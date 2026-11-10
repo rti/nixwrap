@@ -86,7 +86,7 @@ By default, the imperative `wrap` command will:
 - ✅ Prevent access to Wayland and X. (Use `-d` (desktop) to allow.)
 - ✅ Prevent camera access. (Use `-c` to allow.)
 - ✅ Prevent audio access. (Use `-a` to allow.)
-- ✅ Prevent DBus socket access. (Use `-b` to allow.)
+- ✅ Prevent D-Bus socket access. (Use filtered rules below, or `-B` for direct, unfiltered session-bus access.)
 - ✅ Prevent access to user name information. (Use `-u` to allow.)
 - ❗ **Allow write access** to the **current working directory**. (Use `-p` to prevent.)
 - ❗ **Allow** read only access to all paths in `$NIX_PROFILES`.
@@ -108,7 +108,11 @@ By default, the imperative `wrap` command will:
   -I IFACE Allow Network access only through host interface IFACE (implies -n).
   -a       Allow Audio access.
   -c       Allow Camera access.
-  -b       Allow DBus access.
+  -B       Allow direct, unfiltered host session D-Bus access.
+  -b ACTION:RULE
+           Add a session D-Bus permission; repeatable.
+           Actions: call, broadcast, talk, own, see.
+           RULE uses xdg-dbus-proxy syntax: NAME[=INTERFACE.METHOD@/PATH].
   -u       Allow System user information access.
   -e VAR   Allow env var VAR access.
   -r PATH  Mount PATH into sandbox in read-only mode.
@@ -162,7 +166,8 @@ The `lib.mkWrap` function takes the following arguments.
 | `closures` | Optional list of additional Nix packages/store paths to share with their runtime closures. Omit or set `null` to share all of `/nix` (default). Any list, including `[]`, enables closure-only sharing and automatically includes `package`; `$NIX_PROFILES` are not auto-mounted. |
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
-| `capabilities` | Boolean attributes: `network`, `hostNetwork`, `desktop`, `audio`, `camera`, `dbus`, `userInfo`. All default to disabled. `network` selects isolated pasta networking (`-n`); `hostNetwork` retains the caller's network (`-N`) and takes precedence over `network`. |
+| `capabilities` | Boolean attributes: `network`, `hostNetwork`, `desktop`, `audio`, `camera`, `hostDbus`, `userInfo`. All default to disabled. `network` selects isolated pasta networking (`-n`); `hostNetwork` retains the caller's network (`-N`) and takes precedence over `network`. `hostDbus` grants direct, unfiltered host session D-Bus access (`-B`), without starting a proxy. |
+| `dbus` | Filtered session-bus policy: lists `call`, `broadcast`, `talk`, `own`, `see`. All default to `[]`. Cannot be combined with `capabilities.hostDbus = true` (unfiltered access). See below. |
 | `environment` | Attribute set of variables: a value sets the variable; `null` passes through the caller's value. Defaults to `{}`. Set `home`, not `environment.HOME`, to select persistent home storage. |
 
 

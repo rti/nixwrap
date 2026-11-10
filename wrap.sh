@@ -125,7 +125,11 @@ OPTIONS:
   -I IFACE Allow Network access only through host interface IFACE (implies -n).
   -a       Allow Audio access.
   -c       Allow Camera access.
-  -b       Allow DBus access.
+  -B       Allow direct, unfiltered host session D-Bus access.
+  -b ACTION:RULE
+           Add a session D-Bus permission; repeatable.
+           Actions: call, broadcast, talk, own, see.
+           RULE uses xdg-dbus-proxy syntax: NAME[=INTERFACE.METHOD@/PATH].
   -u       Allow System user information access.
   -e VAR   Allow env var VAR access.
   -r PATH  Mount PATH into sandbox in read-only mode.
@@ -199,8 +203,18 @@ mount_readonly_paths() {
 }
 
 TMPDIR=$(mktemp -d)
+dbus_proxy_pid=""
+sandbox_pid=""
 
 cleanup() {
+  if [[ -n "$sandbox_pid" ]]; then
+    kill "$sandbox_pid" 2>/dev/null || true
+    wait "$sandbox_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$dbus_proxy_pid" ]]; then
+    kill "$dbus_proxy_pid" 2>/dev/null || true
+    wait "$dbus_proxy_pid" 2>/dev/null || true
+  fi
   rm -rf "$TMPDIR"
 }
 
@@ -221,8 +235,10 @@ explicit_mounts=()
 store_roots=()
 store_bin_path=""
 xauth_src=""
+dbus_raw=0
+dbus_rules=()
 
-while getopts "r:w:s:e:H:P:I:abcdfhnNpuv" opt; do
+while getopts "r:w:s:e:H:P:I:b:BacdfhnNpuv" opt; do
   case "$opt" in
 
   s)
@@ -253,11 +269,28 @@ while getopts "r:w:s:e:H:P:I:abcdfhnNpuv" opt; do
     done
     ;;
 
-  # grant access to dbus system
+  # Keep raw access explicit; filtered rules are assembled after parsing.
+  B)
+    dbus_raw=1
+    ;;
+
   b)
-    dbus_socket="$(echo "$DBUS_SESSION_BUS_ADDRESS" | cut -d= -f2)"
-    bwrap_opts+=(--bind "$dbus_socket" "$dbus_socket")
-    env_vars+=(DBUS_SESSION_BUS_ADDRESS)
+    # Consume only the action separator; colons inside native rules are data.
+    dbus_action=${OPTARG%%:*}
+    dbus_rule=${OPTARG#*:}
+    if [[ "$OPTARG" != *:* || -z "$dbus_rule" ]]; then
+      echo "wrap: -b requires ACTION:RULE with a nonempty rule" >&2
+      exit 1
+    fi
+    case "$dbus_action" in
+      call | broadcast | talk | own | see)
+        dbus_rules+=("--$dbus_action=$dbus_rule")
+        ;;
+      *)
+        echo "wrap: unknown D-Bus action '$dbus_action'; expected call, broadcast, talk, own, or see" >&2
+        exit 1
+        ;;
+    esac
     ;;
 
   # grant desktop access (Wayland or X11) and rendering hardware access
@@ -492,6 +525,55 @@ if [[ -n "$store_bin_path" ]]; then
 fi
 bwrap_opts+=(--setenv HOME "$HOME")
 
+if (( dbus_raw || ${#dbus_rules[@]} )); then
+  if (( dbus_raw && ${#dbus_rules[@]} )); then
+    echo "wrap: -B cannot be combined with filtered D-Bus rules (-b)" >&2
+    exit 1
+  fi
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    echo "wrap: DBUS_SESSION_BUS_ADDRESS is required for D-Bus access" >&2
+    exit 1
+  fi
+fi
+
+if (( dbus_raw )); then
+  # Preserve the host address and expose filesystem sockets without a proxy.
+  # Addresses may contain fallback transports and optional fields such as guid.
+  IFS=';' read -r -a dbus_addresses <<<"$DBUS_SESSION_BUS_ADDRESS"
+  for dbus_address in "${dbus_addresses[@]}"; do
+    [[ "$dbus_address" == unix:* ]] || continue
+    IFS=',' read -r -a dbus_fields <<<"${dbus_address#unix:}"
+    for dbus_field in "${dbus_fields[@]}"; do
+      [[ "$dbus_field" == path=* ]] || continue
+      dbus_socket=${dbus_field#path=}
+      dbus_decoded=""
+      while [[ "$dbus_socket" =~ ^([^%]*)%([[:xdigit:]]{2})(.*)$ ]]; do
+        printf -v dbus_byte '%b' "\\x${BASH_REMATCH[2]}"
+        dbus_decoded+="${BASH_REMATCH[1]}$dbus_byte"
+        dbus_socket=${BASH_REMATCH[3]}
+      done
+      dbus_socket="$dbus_decoded$dbus_socket"
+      bwrap_opts+=(--bind "$dbus_socket" "$dbus_socket")
+    done
+  done
+  bwrap_opts+=(--setenv DBUS_SESSION_BUS_ADDRESS "$DBUS_SESSION_BUS_ADDRESS")
+elif (( ${#dbus_rules[@]} )); then
+  dbus_proxy_socket="$TMPDIR/session-bus"
+  # The readiness byte comes only after listen() succeeds. Keeping a copy of
+  # the pipe open ties the proxy to this supervisor; EOF also detects failure.
+  coproc DBUS_PROXY {
+    exec xdg-dbus-proxy --fd=1 "$DBUS_SESSION_BUS_ADDRESS" \
+      "$dbus_proxy_socket" --filter "${dbus_rules[@]}"
+  }
+  dbus_proxy_pid=$DBUS_PROXY_PID
+  exec {dbus_proxy_fd}<&"${DBUS_PROXY[0]}"
+  if ! IFS= read -r -N 1 -t 10 <&"$dbus_proxy_fd"; then
+    echo "wrap: D-Bus proxy failed to become ready" >&2
+    exit 1
+  fi
+  bwrap_opts+=(--setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$dbus_proxy_socket")
+fi
+
 if [[ -n "$host_ports" && "$network" != n ]]; then
   echo "-P requires isolated networking (-n), not -N or the default mode" >&2
   exit 1
@@ -543,8 +625,9 @@ elif [[ "$network" == n ]]; then
   pasta_launch+=(--)
 fi
 
-# Finally: Launch it
-exec "${pasta_launch[@]}" bwrap \
+# A small supervisor owns the proxy and forwards termination to bubblewrap.
+launch_sandbox() {
+  exec "${pasta_launch[@]}" bwrap \
   --clearenv \
   --dev /dev \
   --proc /proc \
@@ -553,3 +636,16 @@ exec "${pasta_launch[@]}" bwrap \
   --dir "$HOME" \
   "${bwrap_opts[@]}" \
   "$@"
+}
+if [[ -n "$dbus_proxy_pid" ]]; then
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  launch_sandbox "$@" <&0 &
+  sandbox_pid=$!
+  sandbox_status=0
+  wait "$sandbox_pid" || sandbox_status=$?
+  sandbox_pid=""
+  exit "$sandbox_status"
+else
+  launch_sandbox "$@"
+fi

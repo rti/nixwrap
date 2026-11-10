@@ -34,6 +34,7 @@
         readOnly = [ ];
       },
       capabilities ? { },
+      dbus ? { },
       environment ? { },
     }:
     let
@@ -52,7 +53,7 @@
         hostNetwork = "-N";
         audio = "-a";
         camera = "-c";
-        dbus = "-b";
+        hostDbus = "-B";
         userInfo = "-u";
       };
       enabledCapabilities = builtins.filter (
@@ -67,6 +68,11 @@
           map (path: "-s ${pkgs.lib.escapeShellArg (toString path)}") ([ package ] ++ closures)
         )
         ++ (map (capability: capabilityFlags.${capability}) enabledCapabilities)
+        ++ (map (rule: "-b ${pkgs.lib.escapeShellArg "call:${rule}"}") (dbus.call or [ ]))
+        ++ (map (rule: "-b ${pkgs.lib.escapeShellArg "broadcast:${rule}"}") (dbus.broadcast or [ ]))
+        ++ (map (name: "-b ${pkgs.lib.escapeShellArg "talk:${name}"}") (dbus.talk or [ ]))
+        ++ (map (name: "-b ${pkgs.lib.escapeShellArg "own:${name}"}") (dbus.own or [ ]))
+        ++ (map (name: "-b ${pkgs.lib.escapeShellArg "see:${name}"}") (dbus.see or [ ]))
         ++ (map (port: "-P ${toString port}") hostPorts)
         ++ (map (key: "-e ${pkgs.lib.escapeShellArg key}") (builtins.attrNames environment))
         ++ pkgs.lib.optional (!shareCwd) "-p"
@@ -86,6 +92,12 @@
       builtins.attrNames capabilities
     );
     assert !(builtins.hasAttr "HOME" environment);
+    assert builtins.all (key: builtins.elem key [ "call" "broadcast" "talk" "own" "see" ]) (
+      builtins.attrNames dbus
+    );
+    assert !(capabilities.hostDbus or false) || builtins.all (rules: rules == [ ]) (
+      builtins.attrValues dbus
+    );
     assert builtins.all (key: builtins.match "[A-Za-z_][A-Za-z0-9_]*" key != null) (
       builtins.attrNames environment
     );

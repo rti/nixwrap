@@ -25,6 +25,7 @@ stdenvNoCC.mkDerivation {
             pkgs.passt
             pkgs.nix
             pkgs.iproute2
+            pkgs.xdg-dbus-proxy
           ]
         }
   '';
