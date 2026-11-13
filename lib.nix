@@ -35,6 +35,7 @@
       },
       capabilities ? { },
       dbus ? { },
+      egress ? { tcp = [ ]; udp = [ ]; },
       environment ? { },
     }:
     let
@@ -74,6 +75,8 @@
         ++ (map (name: "-b ${pkgs.lib.escapeShellArg "own:${name}"}") (dbus.own or [ ]))
         ++ (map (name: "-b ${pkgs.lib.escapeShellArg "see:${name}"}") (dbus.see or [ ]))
         ++ (map (port: "-P ${toString port}") hostPorts)
+        ++ (map (endpoint: "--allowed-egress-tcp ${pkgs.lib.escapeShellArg (toString endpoint)}") (egress.tcp or [ ]))
+        ++ (map (endpoint: "--allowed-egress-udp ${pkgs.lib.escapeShellArg (toString endpoint)}") (egress.udp or [ ]))
         ++ (map (key: "-e ${pkgs.lib.escapeShellArg key}") (builtins.attrNames environment))
         ++ pkgs.lib.optional (!shareCwd) "-p"
         ++ pkgs.lib.optional (home != null) "-H ${escapePath home}";
@@ -98,6 +101,12 @@
     assert !(capabilities.hostDbus or false) || builtins.all (rules: rules == [ ]) (
       builtins.attrValues dbus
     );
+    assert builtins.all (key: builtins.elem key [ "tcp" "udp" ]) (
+      builtins.attrNames egress
+    );
+    # Egress tunnels need a network namespace of their own; hostNetwork keeps
+    # the caller's, where wrap cannot address the session's loopback.
+    assert !(capabilities.hostNetwork or false) || (egress.tcp == [ ] && egress.udp == [ ]);
     assert builtins.all (key: builtins.match "[A-Za-z_][A-Za-z0-9_]*" key != null) (
       builtins.attrNames environment
     );

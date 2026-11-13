@@ -26,12 +26,19 @@ let
     executable = "bash";
     capabilities.hostDbus = true;
   };
+  # Declarative mirror of the CLI tunnel flags.
+  egressCaller = mkWrap {
+    name = "profile-test-egress";
+    package = pkgs.bash;
+    executable = "bash";
+    egress.tcp = [ "network.test:8080" ];
+  };
   # Throwaway CA and server certificate for the TLS egress fixture. The peer
   # serves it; only the machine trusts it, so a successful fetch proves the
   # session used the caller's certificate authorities.
   tlsFixture = pkgs.runCommand "network-test-tls" { nativeBuildInputs = [ pkgs.openssl ]; } ''
     mkdir -p $out
-    openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
       -keyout $out/key.pem -out $out/cert.pem \
       -subj "/CN=network.test" -addext "subjectAltName=DNS:network.test"
   '';
@@ -72,6 +79,7 @@ pkgs.testers.nixosTest {
       wrap
       dbusCaller
       hostDbusCaller
+      egressCaller
       pkgs.bash
       pkgs.coreutils
       pkgs.gnugrep
@@ -1495,6 +1503,17 @@ pkgs.testers.nixosTest {
           sleep 1
         done
         test "$out" = "tcp:outbound-network-ok udp:both"
+      """))
+
+    with subtest("mkWrap egress exposes the same single endpoint as the CLI flags"):
+      # The generated launcher must carry --allowed-egress-tcp just like a
+      # command line would.
+      machine.succeed(as_alice("""
+        test "$(profile-test-egress -c 'curl --noproxy "*" -fsS --max-time 5 http://network.test:8080/source')" = 192.168.1.1
+        profile-test-egress -euo pipefail -c '
+          grep -q "^192.168.1.3 network.test$" /etc/hosts
+          ! timeout 3 curl --noproxy "*" --fail --silent --max-time 2 http://network.test:8081
+        '
       """))
 
     with subtest("--allowed-egress sessions keep the caller's numeric identity"):

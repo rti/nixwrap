@@ -188,6 +188,7 @@ The `lib.mkWrap` function takes the following arguments.
 | `home` | Host backing directory to create if needed and mount writable at the caller's HOME inside the sandbox. The HOME value does not change. Omit to keep the default isolated home. |
 | `shareCwd` | Mount the launch-time working directory writable, subject to wrap's protected-path rules. Defaults to `false`. Startup preserves the cwd if it exists inside the sandbox, otherwise falling back to HOME. |
 | `hostPorts` | Host loopback TCP ports accessible at the same `127.0.0.1` port inside the sandbox. Defaults to `[]`. Requires `capabilities.network = true` and `hostNetwork` disabled. |
+| `egress` | Egress tunnels: lists `tcp` and `udp` of `domain:port` or IPv4 `address:port`, defaulting to empty. Not combinable with `hostNetwork`. See `--allowed-egress-tcp` and `--allowed-egress-udp`. |
 | `closures` | Optional list of additional Nix packages/store paths to share with their runtime closures. Omit or set `null` to share all of `/nix` (default). Any list, including `[]`, enables closure-only sharing and automatically includes `package`; `$NIX_PROFILES` are not auto-mounted. |
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
