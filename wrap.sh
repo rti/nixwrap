@@ -138,13 +138,15 @@ OPTIONS:
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
            HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
   --allowed-egress-tcp DOMAIN:PORT | ADDRESS:PORT
-           With the default network-less mode, allow exactly this one TCP
-           endpoint out of the sandbox; repeatable. A domain is resolved by the
-           caller before the sandbox starts and the answer is published to the
-           session in a generated /etc/hosts. The address, resolved or given,
-           is assigned to the session's loopback interface, and the endpoint is
-           tunnelled to the caller's network namespace through a unix socket in
-           wrap's private directory. Alias: --allow. IPv4 only.
+           Allow exactly this one TCP endpoint out of the sandbox; repeatable.
+           In the default network-less mode it is the sandbox's only way out.
+           With -n or -I it also works, as a direct host-resolved path to the
+           endpoint next to pasta's unrestricted egress. A domain is resolved
+           by the caller before the sandbox starts and the answer is published
+           to the session in a generated /etc/hosts. The address, resolved or
+           given, is assigned to the session's loopback interface, and the
+           endpoint is tunnelled to the caller's network namespace through a
+           unix socket in wrap's private directory. Alias: --allow. IPv4 only.
   --allowed-egress-udp DOMAIN:PORT | ADDRESS:PORT
            Same as --allowed-egress-tcp for one UDP endpoint; datagram
            boundaries are preserved and datagram flows are carried one at a
@@ -565,9 +567,16 @@ fi
 egress_netns=""
 
 if (( ${#allowed_egress_tcp[@]} || ${#allowed_egress_udp[@]} )); then
-  if [[ "$network" != 0 ]]; then
-    echo "--allowed-egress-tcp/udp needs the default network-less mode; drop -n, -N or -I" >&2
+  # -N is the one network mode that cannot host a tunnel: the session would
+  # share the caller's own network namespace, and wrap cannot address its
+  # loopback there. -n and -I run the tunnel alongside pasta's egress; the
+  # allowlist then adds paths, it does not confine pasta.
+  if [[ "$network" == N ]]; then
+    echo "--allowed-egress-tcp/udp cannot be combined with -N; the tunnels need a network namespace of their own" >&2
     exit 1
+  fi
+  if [[ "$network" == n ]]; then
+    echo "Note: with -n or -I, pasta keeps full egress through wrap0; --allowed-egress-* adds host-resolved endpoints but does not restrict pasta." >&2
   fi
   for tool in getent ip setsid socat unshare; do
     if ! command -v "$tool" >/dev/null; then
@@ -705,9 +714,9 @@ trap "exit 143" TERM
       egress_added+=("$address")
     fi
     if [[ "$proto" == tcp ]]; then
-      egress_netns+="setsid $egress_socat TCP-LISTEN:$port,bind=$address,reuseaddr,fork UNIX-CONNECT:$socket >/dev/null 2>&1 &"$'\n'
+      egress_netns+="setsid $egress_socat TCP-LISTEN:$port,bind=$address,reuseaddr,fork UNIX-CONNECT:$socket >>$TMPDIR/egress-socat.log 2>&1 &"$'\n'
     else
-      egress_netns+="setsid $egress_socat -T 10 UDP-LISTEN:$port,fork,bind=$address,reuseaddr UNIX-CONNECT:$socket,socktype=5 >/dev/null 2>&1 &"$'\n'
+      egress_netns+="setsid $egress_socat -T 10 UDP-LISTEN:$port,fork,bind=$address,reuseaddr UNIX-CONNECT:$socket,socktype=5 >>$TMPDIR/egress-socat.log 2>&1 &"$'\n'
     fi
     egress_netns+='pids="$pids $!"'$'\n'
     egress_ports+=("$port")
@@ -717,17 +726,27 @@ trap "exit 143" TERM
   egress_netns+="trap - INT"$'\n'
 
   # Give the listeners a moment to reach listen() before the session starts;
-  # an app that connects first would otherwise see ECONNREFUSED.
+  # an app that connects first would otherwise see ECONNREFUSED. Start them
+  # up, then refuse to launch the session at all if they never got there:
+  # a sandbox that silently cannot use its only way out is worse than a
+  # failed launch.
   if [[ -n "$egress_ss" ]]; then
     listening=""
     for port in "${egress_ports[@]}"; do
       listening+="${listening:+ && }\$ready == *\":$port \"*"
     done
-    egress_netns+="for _ in {1..20}; do"$'\n'
+    egress_netns+="for _ in {1..40}; do"$'\n'
     # -l without -t also reports the bound UDP sockets.
     egress_netns+="  ready=\"\$($egress_ss -ln || true)\""$'\n'
     egress_netns+="  if [[ $listening ]]; then break; fi"$'\n'
     egress_netns+="done"$'\n'
+    egress_netns+="if [[ ! ( $listening ) ]]; then"$'\n'
+    egress_netns+="  echo 'wrap: egress listeners failed to start' >&2"$'\n'
+    # The listeners write their errors, and their polite exit on teardown, to
+    # a log; show it only when the launch is actually failing.
+    egress_netns+="  cat $TMPDIR/egress-socat.log >&2 2>/dev/null"$'\n'
+    egress_netns+="  exit 1"$'\n'
+    egress_netns+="fi"$'\n'
   fi
   egress_netns+='"$@"'$'\n'
 
@@ -738,7 +757,10 @@ trap "exit 143" TERM
     printf '127.0.0.1 localhost\n::1 localhost\n%s' "$egress_hosts" >"$TMPDIR/egress-hosts"
     bwrap_opts+=(--ro-bind "$TMPDIR/egress-hosts" /etc/hosts)
   fi
-  bwrap_opts+=(--share-net)
+  # In the combined mode the pasta branch has already shared the namespace.
+  if [[ "$network" != n ]]; then
+    bwrap_opts+=(--share-net)
+  fi
 fi
 
 # Assemble path mounts in precedence order. Later mounts override earlier ones.
@@ -918,8 +940,9 @@ fi
 # The session's network namespace is administered from a user namespace that
 # maps the caller to root, exactly as pasta does for -n. Without the same
 # restoration, a session that reaches the network through a tunnel would run as
-# root while -n runs as the caller.
-if [[ -n "$egress_netns" ]]; then
+# root while -n runs as the caller. In the combined mode the pasta branch has
+# already restored the identity.
+if [[ -n "$egress_netns" && "$network" != n ]]; then
   bwrap_opts+=(--uid "$UID" --gid "$(id -g)")
 fi
 
@@ -934,12 +957,19 @@ bwrap_cmd=(bwrap
 
 # A small supervisor owns the proxy and forwards termination to bubblewrap.
 launch_sandbox() {
-  if [[ -n "$egress_netns" ]]; then
+  if [[ -n "$egress_netns" && "$network" != n ]]; then
     # The unix socket is already visible inside the session through the $TMPDIR
     # bind. The prologue addresses the loopback, starts the session-side
     # listeners, and then runs bubblewrap. It is not exec'd: wrap must outlive
     # the session to close the caller-side tunnels and delete the sockets.
     unshare --user --map-root-user --net "$egress_shell" "$TMPDIR/egress-netns.sh" \
+      "${bwrap_cmd[@]}" "$@"
+    return $?
+  elif [[ -n "$egress_netns" ]]; then
+    # The same prologue, run as pasta's command: it executes in the namespace
+    # pasta created, addresses the loopback there, starts the session-side
+    # listeners, and then runs bubblewrap with --share-net as usual.
+    "${pasta_launch[@]}" "$egress_shell" "$TMPDIR/egress-netns.sh" \
       "${bwrap_cmd[@]}" "$@"
     return $?
   fi

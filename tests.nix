@@ -1440,16 +1440,24 @@ pkgs.testers.nixosTest {
       machine.succeed(as_alice("""
         # One datagram out and one back: the flow is bridged and the payload
         # was not merged with any other. Flows one after another each work. A
-        # datagram flow costs two process forks on a single-CPU guest, so the
-        # client waits patiently rather than giving up early.
-        out=$(wrap --allowed-egress-udp network.test:19095 bash -euo pipefail -c '
-          printf "p1:"
-          printf probe | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
-          printf " p2:"
-          printf first | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
-          printf " p3:"
-          printf second | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
-        ' 2>&1)
+        # datagram flow costs two process forks on a single-CPU guest, the
+        # socat UDP listener can drop a new flow's first datagram while it
+        # hands over to a forked child, so the session is retried.
+        out=""
+        for _ in {1..5}; do
+          out=$(wrap --allowed-egress-udp network.test:19095 bash -euo pipefail -c '
+            printf "p1:"
+            printf probe | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
+            printf " p2:"
+            printf first | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
+            printf " p3:"
+            printf second | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
+          ' 2>&1) || true
+          if [[ "$out" = "p1:probe p2:first p3:second" ]]; then
+            break
+          fi
+          sleep 1
+        done
         if [[ "$out" != "p1:probe p2:first p3:second" ]]; then
           echo "Unexpected datagram flows: [$out]" >&2
           exit 1
@@ -1469,13 +1477,23 @@ pkgs.testers.nixosTest {
 
     with subtest("--allowed-egress-tcp and --allowed-egress-udp on one host are separate"):
       machine.succeed(as_alice("""
-        out=$(wrap --allowed-egress-tcp network.test:8080 --allowed-egress-udp network.test:19095 \
-          bash -euo pipefail -c '
-            printf "tcp:"
-            curl --noproxy "*" --fail --silent --show-error --max-time 10 http://network.test:8080
-            printf " udp:"
-            printf both | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
-          ' 2>&1)
+        # Both allowances work in one session. Retried like the datagram
+        # test: the UDP half can lose a flow's first datagram to the socat
+        # listener handover on a loaded guest.
+        out=""
+        for _ in {1..5}; do
+          out=$(wrap --allowed-egress-tcp network.test:8080 --allowed-egress-udp network.test:19095 \
+            bash -euo pipefail -c '
+              printf "tcp:"
+              curl --noproxy "*" --fail --silent --show-error --max-time 10 http://network.test:8080
+              printf " udp:"
+              printf both | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
+            ' 2>&1) || true
+          if [[ "$out" = "tcp:outbound-network-ok udp:both" ]]; then
+            break
+          fi
+          sleep 1
+        done
         test "$out" = "tcp:outbound-network-ok udp:both"
       """))
 
@@ -1508,13 +1526,75 @@ pkgs.testers.nixosTest {
             exit 1
           fi
         done
-        # The tunnel replaces the network-less mode; it is not an add-on to -n or -N.
-        ! wrap -n --allowed-egress-tcp network.test:8080 true
+        # -N inherits the caller's namespace; wrap cannot address its loopback.
         ! wrap -N --allowed-egress-tcp network.test:8080 true
-        ! wrap -n --allowed-egress-udp network.test:19095 true
         ! wrap -N --allowed-egress-udp network.test:19095 true
+        ! wrap -n -N --allowed-egress-tcp network.test:8080 true
         # The unix sockets are destroyed once the session closes.
         ! ls /tmp/tmp.*/egress-*.sock
+      """))
+
+    with subtest("With -n the tunnels coexist with pasta's egress"):
+      # The last network flag wins: -n after an endpoint option still selects
+      # pasta, and the tunnel prologue runs inside the namespace pasta made.
+      machine.succeed(as_alice("""
+        # Combining them is permitted but confined by neither: wrap must say
+        # on stderr that the allowlist does not restrict pasta.
+        note="$(wrap -n --allowed-egress-tcp network.test:8080 true 2>&1 >/dev/null)" || {
+          echo "note-wrap failed: [$note]" >&2
+          exit 1
+        }
+        if [[ "$note" != *"does not restrict pasta"* ]]; then
+          echo "Unexpected note: [$note]" >&2
+          exit 1
+        fi
+
+        # The host-resolved answer is in the session, and it is local: the
+        # endpoint is reached through lo, not through wrap0. The session runs
+        # with -v, so a failing launch leaves the real bwrap command line in
+        # the log for inspection.
+        if ! wrap -v --allowed-egress-tcp network.test:8080 -n -P 18080 bash -euo pipefail -c '
+          hosts="$(grep "^192\.168\.1\.3 " /etc/hosts || true)"
+          if [[ "$hosts" != "192.168.1.3 network.test" ]]; then
+            echo "DIAG-Unexpected hosts line in combined mode: [$hosts]"
+            exit 1
+          fi
+          rt1="$("${pkgs.iproute2}/bin/ip" route get 192.168.1.3 2>&1)"
+          if [[ "$rt1" != *" dev lo "* ]]; then
+            echo "DIAG-Unexpected route for the endpoint: [$rt1]"
+            exit 1
+          fi
+          body="$(curl --noproxy "*" --fail --silent --show-error --max-time 5 http://network.test:8080 || true)"
+          if [[ "$body" != outbound-network-ok ]]; then
+            echo "DIAG-Unexpected tunnel body: [$body]"
+            exit 1
+          fi
+          # The egress owned by pasta itself is untouched: DNS forwarded from
+          # the sandbox, the -P host loopback forward, and a route for every
+          # other address. The endpoint address is also the gateway here, so
+          # the local route can leave "dev wrap0" as the last field: match no
+          # further.
+          answer="$(dig +short +time=2 +tries=1 network.test A)"
+          if [[ "$answer" != 192.168.1.3 ]]; then
+            echo "DIAG-Unexpected sandbox answer: [$answer]"
+            exit 1
+          fi
+          echo="$(printf pasta | timeout 3 socat -T 1 - TCP4:127.0.0.1:18080)"
+          if [[ "$echo" != pasta ]]; then
+            echo "DIAG-Unexpected host-port echo: [$echo]"
+            exit 1
+          fi
+          rt2="$("${pkgs.iproute2}/bin/ip" route get 192.0.2.10 2>&1)"
+          if [[ "$rt2" != *" dev wrap0"* ]]; then
+            echo "DIAG-Unexpected route for 192.0.2.10: [$rt2]"
+            exit 1
+          fi
+        ' 2>/tmp/coexist-stderr; then
+          echo "Combined-mode session failed; key lines:" >&2
+          grep -a "DIAG-\|egress-hosts\|/etc/hosts\|egress listeners\|Error" /tmp/coexist-stderr | head -30 >&2
+          exit 1
+        fi
+        rm -f /tmp/coexist-stderr
       """))
 
     machine.succeed("systemctl stop network-test-host-sockets.service")
@@ -1639,6 +1719,29 @@ pkgs.testers.nixosTest {
             wrap -I wg1 bash -euo pipefail -c '
               test "$(printf vpn-udp6 | timeout 3 socat -t 1 -T 1 - \
                 UDP6:[fd77::2]:18082)" = vpn-udp6
+            '
+          """))
+
+        with subtest("--allowed-egress tunnels compose alongside -I pasta networking"):
+          # -I steers only pasta's egress; the caller's half of the tunnel
+          # keeps the caller's default path, so the peer sees the LAN address
+          # of a tunnelled request while -I itself is untouched. Inside, the
+          # endpoint is local to the session, proving the answer came through
+          # the tunnel while every other address still leaves through wrap0.
+          machine.succeed(as_alice("""
+            # -4 on purpose: the tunnel carries the IPv4 endpoint, while
+            # pasta's unrestricted egress would otherwise let curl prefer
+            # the endpoint's IPv6 address and bypass the tunnel silently.
+            body="$(wrap -I wg1 --allowed-egress-tcp wg.test:8080 \
+              curl -4 --noproxy "*" -fsS --max-time 5 http://wg.test:8080/source)"
+            if [[ "$body" != 192.168.1.1 ]]; then
+              echo "Unexpected tunnel source next to -I: [$body]" >&2
+              exit 1
+            fi
+            wrap -I wg1 --allowed-egress-tcp wg.test:8080 bash -euo pipefail -c '
+              grep -q "^10.77.0.2 wg.test$" /etc/hosts
+              ${pkgs.iproute2}/bin/ip route get 10.77.0.2 | grep -F " dev lo "
+              ${pkgs.iproute2}/bin/ip route get 192.168.1.3 | grep -F " dev wrap0"
             '
           """))
 

@@ -57,6 +57,7 @@ An IPv4 address may be given instead of a name (`--allowed-egress-tcp 203.0.113.
 
 As with `-n` and `-N`, the caller's certificate authorities are shared into the session, so an HTTPS endpoint verifies normally. The session also runs with the caller's own uid and gid, as `-n` does: `-u` reports your username, and files the session writes are yours.
 
+With `-n` or `-I` the tunnels also work: the endpoint stays host-resolved and reachable through its own path, next to pasta's ordinary, unrestricted egress through `wrap0`. The allowlist then adds ways out; it does not confine pasta (nothing rootless can — see the note on why no firewall is involved above), so a confined session should not ask for `-n`. wrap says so on stderr when the two are combined. `-N` is rejected outright: the session would share the caller's namespace, whose loopback wrap cannot address.
 ### Declarative Opencode
 
 > You want to run your opencode agent with access to the current working directory.
@@ -137,8 +138,10 @@ By default, the imperative `wrap` command will:
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
            HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
   --allowed-egress-tcp DOMAIN:PORT | ADDRESS:PORT
-           With the default network-less mode, allow exactly this one TCP
-           endpoint out of the sandbox; repeatable. Alias: --allow. IPv4 only.
+           Allow exactly this one TCP endpoint out of the sandbox; repeatable.
+           In the default network-less mode it is the sandbox's only way out;
+           with -n or -I it adds a host-resolved path next to pasta's
+           egress. Alias: --allow. IPv4 only.
   --allowed-egress-udp DOMAIN:PORT | ADDRESS:PORT
            Same as --allowed-egress-tcp for one UDP endpoint. Alias: --allow-udp.
   -v       Verbose output for debugging.
