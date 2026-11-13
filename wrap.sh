@@ -137,6 +137,18 @@ OPTIONS:
   -s PATH  Share PATH's Nix runtime closure read-only instead of all of /nix and NIX_PROFILES.
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
            HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
+  --allowed-egress-tcp DOMAIN:PORT | ADDRESS:PORT
+           With the default network-less mode, allow exactly this one TCP
+           endpoint out of the sandbox; repeatable. A domain is resolved by the
+           caller before the sandbox starts and the answer is published to the
+           session in a generated /etc/hosts. The address, resolved or given,
+           is assigned to the session's loopback interface, and the endpoint is
+           tunnelled to the caller's network namespace through a unix socket in
+           wrap's private directory. Alias: --allow. IPv4 only.
+  --allowed-egress-udp DOMAIN:PORT | ADDRESS:PORT
+           Same as --allowed-egress-tcp for one UDP endpoint; datagram
+           boundaries are preserved and datagram flows are carried one at a
+           time. Alias: --allow-udp.
   -v       Verbose output for debugging.
 
 ADVANCED OPTIONS:
@@ -206,6 +218,10 @@ TMPDIR=$(mktemp -d)
 dbus_proxy_pid=""
 sandbox_pid=""
 
+# Caller-side halves of --allowed-egress-tcp/udp tunnels; torn down with the
+# session.
+egress_pids=()
+
 cleanup() {
   if [[ -n "$sandbox_pid" ]]; then
     kill "$sandbox_pid" 2>/dev/null || true
@@ -215,6 +231,11 @@ cleanup() {
     kill "$dbus_proxy_pid" 2>/dev/null || true
     wait "$dbus_proxy_pid" 2>/dev/null || true
   fi
+  # socat forks a handler per connection; signal the whole process group so a
+  # handler cannot outlive the session and keep its sockets open.
+  for pgroup in "${egress_pids[@]}"; do
+    kill -- "-$pgroup" 2>/dev/null || true
+  done
   rm -rf "$TMPDIR"
 }
 
@@ -224,6 +245,68 @@ if [[ $# -eq 0 ]]; then
   usage
   exit 1
 fi
+
+# Long options are handled before getopts, which only knows single letters.
+# Like getopts, parsing stops at the first non-option argument, so these names
+# never collide with arguments of the wrapped command. Everything from a bare
+# -- onwards is left for bwrap to interpret.
+allowed_egress_tcp=()
+allowed_egress_udp=()
+short_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --)
+    short_args+=("$@")
+    break
+    ;;
+  --allowed-egress-tcp | --allow)
+    if [[ $# -lt 2 ]]; then
+      echo "Option $1 requires an argument: $1 DOMAIN:PORT" >&2
+      exit 1
+    fi
+    allowed_egress_tcp+=("$2")
+    shift 2
+    ;;
+  --allowed-egress-udp | --allow-udp)
+    if [[ $# -lt 2 ]]; then
+      echo "Option $1 requires an argument: $1 DOMAIN:PORT" >&2
+      exit 1
+    fi
+    allowed_egress_udp+=("$2")
+    shift 2
+    ;;
+  --allowed-egress-tcp=* | --allow=*)
+    allowed_egress_tcp+=("${1#*=}")
+    shift
+    ;;
+  --allowed-egress-udp=* | --allow-udp=*)
+    allowed_egress_udp+=("${1#*=}")
+    shift
+    ;;
+  -r | -w | -s | -e | -H | -P | -I)
+    # A short option that takes an argument carries it along, so the scan
+    # keeps looking for long options after it instead of mistaking the
+    # argument for the wrapped command.
+    if [[ $# -gt 1 ]]; then
+      short_args+=("$1" "$2")
+      shift 2
+    else
+      short_args+=("$1")
+      shift
+    fi
+    ;;
+  -?*)
+    short_args+=("$1")
+    shift
+    ;;
+  *)
+    # The command; everything after it belongs to it.
+    short_args+=("$@")
+    break
+    ;;
+  esac
+done
+set -- "${short_args[@]}"
 
 share_cwd=1
 force_share_cwd=0
@@ -452,6 +535,212 @@ if [[ -f /proc/sys/dev/tty/legacy_tiocsti ]] && [[ "$(cat /proc/sys/dev/tty/lega
   fi
 fi
 
+# --allowed-egress-tcp and --allowed-egress-udp: the only way out of an
+# otherwise network-less sandbox.
+#
+# The sandbox never gets a route to the network. wrap resolves the name in the
+# caller's context, then bridges exactly one endpoint across the network
+# namespace boundary with a unix socket inside $TMPDIR, which is bind-mounted
+# into the session:
+#
+#   app -> HOST:PORT -> lo (HOST's address) -> socat in the session's netns
+#       -> $TMPDIR/egress-N.sock -> socat in the caller's netns -> the network
+#
+# No firewall rules are involved: pasta, and wrap here, are userspace relays,
+# so sandbox traffic only ever exists in the kernel as caller-owned sockets a
+# host ruleset could not single out. Confinement is structural instead. The
+# session's network namespace holds loopback and nothing else; the endpoint
+# address is local to it, and every socket that leaves is created by the
+# caller, outside the sandbox.
+#
+# The session joins a network namespace owned by a user namespace that wrap
+# creates for it, instead of an empty one of bwrap's own: a network namespace
+# can only be administered from the user namespace that created it, and bwrap
+# creates its user namespace too late for that. So unshare makes user and
+# network namespaces first, the loopback is addressed there, and bwrap runs
+# with --share-net. The session sees the address on its own lo and nothing else.
+
+# egress_netns is the prologue run in the session's network namespace; empty
+# when the feature is off.
+egress_netns=""
+
+if (( ${#allowed_egress_tcp[@]} || ${#allowed_egress_udp[@]} )); then
+  if [[ "$network" != 0 ]]; then
+    echo "--allowed-egress-tcp/udp needs the default network-less mode; drop -n, -N or -I" >&2
+    exit 1
+  fi
+  for tool in getent ip setsid socat unshare; do
+    if ! command -v "$tool" >/dev/null; then
+      echo "--allowed-egress-tcp requires $tool on PATH" >&2
+      exit 1
+    fi
+  done
+  egress_ip="$(readlink -f "$(command -v ip)")"
+  egress_socat="$(readlink -f "$(command -v socat)")"
+  egress_shell="$(readlink -f "$(command -v bash)")"
+  # Used, when available, to wait for the listeners before the session starts.
+  egress_ss=""
+  if command -v ss >/dev/null; then
+    egress_ss="$(readlink -f "$(command -v ss)")"
+  fi
+
+  # Only resolved names end up in /etc/hosts; a literal address needs no name.
+  egress_hosts=""
+  egress_netns='set -e
+pids=""
+stop() { for p in $pids; do kill -- "-$p" 2>/dev/null || true; done; }
+trap stop EXIT
+trap "exit 130" INT
+trap "exit 143" TERM
+'
+  egress_netns+="$egress_ip link set lo up"$'\n'
+  # SIG_IGN is inherited across exec: Ctrl-C belongs to the session, not to it.
+  egress_netns+="trap '' INT"$'\n'
+  egress_added=()
+  egress_ports=()
+  egress_index=0
+  egress_tunnels=()
+
+  # Endpoints tagged with their protocol, in the order they were given.
+  egress_endpoints=()
+  for spec in "${allowed_egress_tcp[@]}"; do
+    egress_endpoints+=("tcp $spec")
+  done
+  for spec in "${allowed_egress_udp[@]}"; do
+    egress_endpoints+=("udp $spec")
+  done
+
+  for endpoint in "${egress_endpoints[@]}"; do
+    proto="${endpoint%% *}"
+    spec="${endpoint#* }"
+    if [[ ! "$spec" =~ ^([^[:space:],]+):([1-9][0-9]*)$ ]] ||
+      (( BASH_REMATCH[2] > 65535 )); then
+      echo "Invalid --allowed-egress-$proto value: $spec (expected DOMAIN:PORT)" >&2
+      exit 1
+    fi
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+
+    address=""
+    if [[ "$host" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+      if (( BASH_REMATCH[1] > 255 || BASH_REMATCH[2] > 255 ||
+        BASH_REMATCH[3] > 255 || BASH_REMATCH[4] > 255 )); then
+        echo "--allowed-egress-$proto: not an IPv4 address: $host" >&2
+        exit 1
+      fi
+      address="$host"
+    elif [[ "$host" == *:* ]]; then
+      echo "--allowed-egress-$proto: IPv6 literals are not supported: $spec" >&2
+      exit 1
+    else
+      while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+          address="${line%% *}"
+          break
+        fi
+      done < <(getent ahostsv4 "$host" || true)
+      if [[ -z "$address" ]]; then
+        echo "--allowed-egress-$proto: could not resolve an IPv4 address for $host" >&2
+        exit 1
+      fi
+      egress_hosts+="$address $host"$'\n'
+    fi
+
+    if [[ "$address" == 127.* ]]; then
+      echo "--allowed-egress-$proto: $host resolves to loopback ($address)" >&2
+      exit 1
+    fi
+
+    # One tunnel per protocol, address and port; repeating a flag is a no-op.
+    key="$proto/$address/$port"
+    duplicate=0
+    for taken in "${egress_tunnels[@]}"; do
+      if [[ "$taken" == "$key" ]]; then
+        duplicate=1
+      fi
+    done
+    if (( duplicate )); then
+      continue
+    fi
+    egress_tunnels+=("$key")
+
+    # Caller-side half: accepts the unix socket and reaches the real address
+    # from the caller's own network namespace. setsid gives it a process group
+    # of its own, so wrap can take the listener and its connection handlers
+    # down together.
+    socket="$TMPDIR/egress-$egress_index.sock"
+    if [[ "$proto" == tcp ]]; then
+      setsid socat "UNIX-LISTEN:$socket,fork,mode=0600" "TCP:$address:$port" >/dev/null 2>&1 &
+    else
+      # A seqpacket socket (socktype 5) gives each datagram flow its own
+      # connection and keeps datagram boundaries; -T drops a flow whose peer
+      # fell silent. socat's UDP listener adopts one peer at a time, so flows
+      # are carried one after another rather than side by side.
+      setsid socat -T 10 "UNIX-LISTEN:$socket,socktype=5,fork,mode=0600" "UDP:$address:$port" >/dev/null 2>&1 &
+    fi
+    egress_pids+=($!)
+    for _ in {1..100}; do
+      if [[ -S "$socket" ]]; then
+        break
+      fi
+      sleep 0.05
+    done
+    if [[ ! -S "$socket" ]]; then
+      echo "--allowed-egress-tcp: failed to create $socket" >&2
+      exit 1
+    fi
+
+    # Session-side half: the address is local to the session's namespace, so
+    # the app connects to it on loopback and socat hands the connection over to
+    # the unix socket. It runs in that namespace but outside the sandbox, which
+    # keeps the sandbox free of forwarding tools and capabilities.
+    seen=0
+    for added in "${egress_added[@]}"; do
+      if [[ "$added" == "$address" ]]; then
+        seen=1
+      fi
+    done
+    if (( ! seen )); then
+      egress_netns+="$egress_ip addr add $address/32 dev lo"$'\n'
+      egress_added+=("$address")
+    fi
+    if [[ "$proto" == tcp ]]; then
+      egress_netns+="setsid $egress_socat TCP-LISTEN:$port,bind=$address,reuseaddr,fork UNIX-CONNECT:$socket >/dev/null 2>&1 &"$'\n'
+    else
+      egress_netns+="setsid $egress_socat -T 10 UDP-LISTEN:$port,fork,bind=$address,reuseaddr UNIX-CONNECT:$socket,socktype=5 >/dev/null 2>&1 &"$'\n'
+    fi
+    egress_netns+='pids="$pids $!"'$'\n'
+    egress_ports+=("$port")
+    egress_index=$((egress_index + 1))
+  done
+
+  egress_netns+="trap - INT"$'\n'
+
+  # Give the listeners a moment to reach listen() before the session starts;
+  # an app that connects first would otherwise see ECONNREFUSED.
+  if [[ -n "$egress_ss" ]]; then
+    listening=""
+    for port in "${egress_ports[@]}"; do
+      listening+="${listening:+ && }\$ready == *\":$port \"*"
+    done
+    egress_netns+="for _ in {1..20}; do"$'\n'
+    # -l without -t also reports the bound UDP sockets.
+    egress_netns+="  ready=\"\$($egress_ss -ln || true)\""$'\n'
+    egress_netns+="  if [[ $listening ]]; then break; fi"$'\n'
+    egress_netns+="done"$'\n'
+  fi
+  egress_netns+='"$@"'$'\n'
+
+  printf '%s' "$egress_netns" >"$TMPDIR/egress-netns.sh"
+
+  # Resolved names need a /etc/hosts entry; a literal address needs no name.
+  if [[ -n "$egress_hosts" ]]; then
+    printf '127.0.0.1 localhost\n::1 localhost\n%s' "$egress_hosts" >"$TMPDIR/egress-hosts"
+    bwrap_opts+=(--ro-bind "$TMPDIR/egress-hosts" /etc/hosts)
+  fi
+  bwrap_opts+=(--share-net)
+fi
+
 # Assemble path mounts in precedence order. Later mounts override earlier ones.
 bound_paths=()
 # Track already-mounted read-only destinations to skip redundant mounts.
@@ -579,8 +868,9 @@ if [[ -n "$host_ports" && "$network" != n ]]; then
   exit 1
 fi
 
-# Both network modes use the caller's certificates.
-if [[ "$network" != 0 ]]; then
+# Anything that can reach the network uses the caller's certificate
+# authorities: -n and -N directly, --allowed-egress-tcp/udp through the tunnel.
+if [[ "$network" != 0 || -n "$egress_netns" ]]; then
   bwrap_opts+=(--ro-bind /etc/ssl /etc/ssl)
   bwrap_opts+=(--ro-bind /etc/static/ssl /etc/static/ssl)
 fi
@@ -625,19 +915,37 @@ elif [[ "$network" == n ]]; then
   pasta_launch+=(--)
 fi
 
+# The session's network namespace is administered from a user namespace that
+# maps the caller to root, exactly as pasta does for -n. Without the same
+# restoration, a session that reaches the network through a tunnel would run as
+# root while -n runs as the caller.
+if [[ -n "$egress_netns" ]]; then
+  bwrap_opts+=(--uid "$UID" --gid "$(id -g)")
+fi
+
+bwrap_cmd=(bwrap
+  --clearenv
+  --dev /dev
+  --proc /proc
+  --tmpfs /tmp
+  --bind "$TMPDIR" "$TMPDIR"
+  --dir "$HOME"
+  "${bwrap_opts[@]}")
+
 # A small supervisor owns the proxy and forwards termination to bubblewrap.
 launch_sandbox() {
-  exec "${pasta_launch[@]}" bwrap \
-  --clearenv \
-  --dev /dev \
-  --proc /proc \
-  --tmpfs /tmp \
-  --bind "$TMPDIR" "$TMPDIR" \
-  --dir "$HOME" \
-  "${bwrap_opts[@]}" \
-  "$@"
+  if [[ -n "$egress_netns" ]]; then
+    # The unix socket is already visible inside the session through the $TMPDIR
+    # bind. The prologue addresses the loopback, starts the session-side
+    # listeners, and then runs bubblewrap. It is not exec'd: wrap must outlive
+    # the session to close the caller-side tunnels and delete the sockets.
+    unshare --user --map-root-user --net "$egress_shell" "$TMPDIR/egress-netns.sh" \
+      "${bwrap_cmd[@]}" "$@"
+    return $?
+  fi
+  exec "${pasta_launch[@]}" "${bwrap_cmd[@]}" "$@"
 }
-if [[ -n "$dbus_proxy_pid" ]]; then
+if [[ -n "$dbus_proxy_pid" || -n "$egress_netns" ]]; then
   trap 'exit 130' INT
   trap 'exit 143' TERM
   launch_sandbox "$@" <&0 &

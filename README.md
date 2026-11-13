@@ -41,6 +41,22 @@ Run a python script with Pulse Audio and Pipewire access, but not sharing the cu
 wrap -a -p python my-tool.py
 ```
 
+### Imperative single-endpoint egress from an offline sandbox
+
+> You need to run a tool that talks to one known server — for example a coding agent reaching only its model endpoint — but the tool must not be able to reach anything else, not even your own machine.
+
+`--allowed-egress-tcp` and `--allowed-egress-udp` keep the sandbox network-less and tunnel exactly one `domain:port` each to the caller's network:
+
+```shell
+wrap -u --allowed-egress-tcp strata.netpleb.com:443 curl https://strata.netpleb.com
+```
+
+The domain is resolved by the caller before the sandbox starts. Inside the session the name resolves to that address through a generated `/etc/hosts`, the address is assigned to the session's own `lo` interface, and connections to it are relayed through a unix socket in wrap's private directory, which is destroyed when the session closes. Nothing else is reachable: no other address, no other port, and no DNS. It requires neither `-n` nor root, and no firewall rules are installed anywhere; unreachability is structural. (A kernel firewall cannot do this job at the pasta boundary anyway: pasta is a userspace relay, so sandbox traffic only ever exists in the kernel as caller-owned sockets that a host ruleset could not single out.)
+
+An IPv4 address may be given instead of a name (`--allowed-egress-tcp 203.0.113.7:443`), in which case no name is resolved and no `/etc/hosts` is written; the address still becomes local to the session. IPv6 is not supported. UDP datagram boundaries are preserved, so a datagram endpoint works as the application expects; TCP and UDP on the same port are separate allowances.
+
+As with `-n` and `-N`, the caller's certificate authorities are shared into the session, so an HTTPS endpoint verifies normally. The session also runs with the caller's own uid and gid, as `-n` does: `-u` reports your username, and files the session writes are yours.
+
 ### Declarative Opencode
 
 > You want to run your opencode agent with access to the current working directory.
@@ -82,7 +98,7 @@ nix run .
 
 By default, the imperative `wrap` command will:
 
-- ✅ Prevent network access. (Use `-n` to allow.)
+- ✅ Prevent network access. (Use `-n` to allow, or `--allowed-egress-tcp`/`--allowed-egress-udp` for a single endpoint.)
 - ✅ Prevent access to Wayland and X. (Use `-d` (desktop) to allow.)
 - ✅ Prevent camera access. (Use `-c` to allow.)
 - ✅ Prevent audio access. (Use `-a` to allow.)
@@ -119,6 +135,12 @@ By default, the imperative `wrap` command will:
   -w PATH  Mount PATH into sandbox in read write mode.
   -s PATH  Share PATH's Nix runtime closure read-only instead of all of /nix and NIX_PROFILES.
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
+           HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
+  --allowed-egress-tcp DOMAIN:PORT | ADDRESS:PORT
+           With the default network-less mode, allow exactly this one TCP
+           endpoint out of the sandbox; repeatable. Alias: --allow. IPv4 only.
+  --allowed-egress-udp DOMAIN:PORT | ADDRESS:PORT
+           Same as --allowed-egress-tcp for one UDP endpoint. Alias: --allow-udp.
   -v       Verbose output for debugging.
 ```
 
