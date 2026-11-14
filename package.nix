@@ -26,6 +26,9 @@ stdenvNoCC.mkDerivation {
             pkgs.nix
             pkgs.iproute2
             pkgs.xdg-dbus-proxy
+            # --allowed-egress-tcp/udp: tunnel, loopback addressing, namespaces
+            pkgs.socat
+            pkgs.util-linux
           ]
         }
   '';

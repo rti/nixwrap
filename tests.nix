@@ -26,6 +26,35 @@ let
     executable = "bash";
     capabilities.hostDbus = true;
   };
+  # Declarative mirror of the CLI tunnel flags.
+  egressCaller = mkWrap {
+    name = "profile-test-egress";
+    package = pkgs.bash;
+    executable = "bash";
+    egress.tcp = [ "network.test:8080" ];
+  };
+  # Throwaway CA and server certificate for the TLS egress fixture. The peer
+  # serves it; only the machine trusts it, so a successful fetch proves the
+  # session used the caller's certificate authorities.
+  tlsFixture = pkgs.runCommand "network-test-tls" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+    mkdir -p $out
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout $out/key.pem -out $out/cert.pem \
+      -subj "/CN=network.test" -addext "subjectAltName=DNS:network.test"
+  '';
+  # A datagram peer that answers every datagram as it arrives. One process that
+  # never releases the port keeps the boundary probes honest: a forking socat
+  # fixture can lose the port between flows once the suite has run a while.
+  udpEchoFixture = pkgs.writeText "udp-echo.py" ''
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", 19095))
+    while True:
+        payload, peer = sock.recvfrom(65535)
+        sock.sendto(payload, peer)
+  '';
 in
 pkgs.testers.nixosTest {
   name = "mytest";
@@ -39,6 +68,9 @@ pkgs.testers.nixosTest {
     networking.nameservers = [ "192.168.1.3" ];
     # WireGuard's encrypted transport between machine and peer.
     networking.firewall.allowedUDPPorts = [ 51820 ];
+    # Trust the TLS egress fixture's certificate: an in-sandbox HTTPS success
+    # must come from verifying against the caller's certificate authorities.
+    security.pki.certificateFiles = [ "${tlsFixture}/cert.pem" ];
     # Match common NixOS: disable legacy TIOCSTI (nixpkgs common-config.nix)
     boot.kernel.sysctl = {
       "dev.tty.legacy_tiocsti" = 0;
@@ -47,6 +79,7 @@ pkgs.testers.nixosTest {
       wrap
       dbusCaller
       hostDbusCaller
+      egressCaller
       pkgs.bash
       pkgs.coreutils
       pkgs.gnugrep
@@ -142,7 +175,7 @@ pkgs.testers.nixosTest {
         prefixLength = 24;
       }
     ];
-    networking.firewall.allowedTCPPorts = [ 8080 ];
+    networking.firewall.allowedTCPPorts = [ 8080 8081 8443 ];
     services.dnsmasq = {
       enable = true;
       resolveLocalQueries = false;
@@ -157,7 +190,7 @@ pkgs.testers.nixosTest {
       };
     };
     # DNS, WireGuard transport, and the IPv4/IPv6 UDP echo probes below.
-    networking.firewall.allowedUDPPorts = [ 53 51820 18082 ];
+    networking.firewall.allowedUDPPorts = [ 53 51820 18082 19095 ];
     # Echo payloads on both address families to exercise UDP independently of TCP.
     systemd.services.network-test-udp = {
       wantedBy = [ "multi-user.target" ];
@@ -167,12 +200,36 @@ pkgs.testers.nixosTest {
       wantedBy = [ "multi-user.target" ];
       serviceConfig.ExecStart = "${pkgs.socat}/bin/socat UDP6-RECVFROM:18082,ipv6only=1,fork EXEC:${pkgs.coreutils}/bin/cat";
     };
+    # The egress probes need a peer that answers every datagram as soon as it
+    # arrives; the RECVFROM service above only replies once the client hangs up.
+    # postStart waits for one answered datagram, so waiting for the unit is
+    # waiting for a peer that is known to reply.
+    systemd.services.network-test-udp-echo = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        ExecStart = "${pkgs.python3}/bin/python3 ${udpEchoFixture}";
+        DynamicUser = true;
+        Restart = "always";
+      };
+      postStart = ''
+        until [ "$(printf ping | ${pkgs.socat}/bin/socat -t 1 - UDP-CONNECT:127.0.0.1:19095)" = ping ]; do
+          sleep 0.1
+        done
+      '';
+    };
     services.nginx = {
       enable = true;
       virtualHosts."network.test" = {
+        # hasSSL in the module comes from addSSL/forceSSL, not from a listen
+        # line's ssl flag, so the certificate is only emitted with this set.
+        addSSL = true;
+        sslCertificate = "${tlsFixture}/cert.pem";
+        sslCertificateKey = "${tlsFixture}/key.pem";
         listen = [
           { addr = "0.0.0.0"; port = 8080; }
           { addr = "[::]"; port = 8080; }
+          { addr = "0.0.0.0"; port = 8081; }
+          { addr = "0.0.0.0"; port = 8443; ssl = true; }
         ];
         root = pkgs.writeTextDir "index.html" "outbound-network-ok";
         # The observed client address distinguishes LAN egress from tunnel egress.
@@ -1329,6 +1386,236 @@ pkgs.testers.nixosTest {
         ! wrap -N -P 18080 true
       """))
 
+    with subtest("--allowed-egress-tcp tunnels one resolved endpoint out of the network-less sandbox"):
+      machine.succeed(as_alice("""
+        # The caller resolves the name; the sandbox only sees the answer, on lo.
+        wrap --allowed-egress-tcp network.test:8080 bash -euo pipefail -c '
+          grep -q "^192.168.1.3 network.test$" /etc/hosts
+          ${pkgs.iproute2}/bin/ip -4 addr show dev lo | grep -q "inet 192.168.1.3/32"
+          # The tunnel endpoint inside the session is a mounted unix socket.
+          ls /tmp/tmp.*/egress-0.sock
+          test "$(curl --noproxy "*" --fail --silent --show-error --max-time 5 http://network.test:8080)" = outbound-network-ok
+          # Only the selected endpoint leaves: another port, another address and
+          # DNS resolution stay out of reach.
+          ! timeout 3 curl --noproxy "*" --fail --silent --max-time 2 http://network.test:8081
+          ! timeout 3 curl --noproxy "*" --fail --silent --max-time 2 http://192.168.1.1:18080
+          test ! -e /etc/resolv.conf
+        '
+      """))
+
+    with subtest("--allowed-egress-tcp is repeatable and shares one address between names"):
+      machine.succeed(as_alice("""
+        wrap --allowed-egress-tcp network.test:8080 --allow network.test:8081 bash -euo pipefail -c '
+          for port in 8080 8081; do
+            test "$(curl --noproxy "*" --fail --silent --max-time 5 http://network.test:$port)" = outbound-network-ok
+          done
+          test "$(${pkgs.iproute2}/bin/ip -4 addr show dev lo | grep -c 192.168.1.3/32)" = 1
+          ! timeout 3 curl --noproxy "*" --fail --silent --max-time 2 http://network.test:8082
+        '
+      """))
+
+    with subtest("--allowed-egress-tcp accepts a literal address with no name to resolve"):
+      machine.succeed(as_alice("""
+        # No lookup and no /etc/hosts: the given address still becomes local to
+        # the session, and only it on the given port is reachable.
+        wrap --allowed-egress-tcp 192.168.1.3:8080 bash -euo pipefail -c '
+          test ! -e /etc/hosts
+          ${pkgs.iproute2}/bin/ip -4 addr show dev lo | grep -q "inet 192.168.1.3/32"
+          test "$(curl --noproxy "*" --fail --silent --max-time 5 http://192.168.1.3:8080)" = outbound-network-ok
+          ! timeout 3 curl --noproxy "*" --fail --silent --max-time 2 http://192.168.1.3:8081
+        '
+      """))
+
+    with subtest("--allowed-egress-tcp carries TLS verification with the caller's certificates"):
+      peer.wait_for_open_port(8443)
+      machine.succeed(as_alice("""
+        # The tunnel forwards bytes, so the session must verify the server itself,
+        # using the certificate authorities wrap shares into the session.
+        wrap --allowed-egress-tcp network.test:8443 bash -euo pipefail -c '
+          test -r /etc/ssl/certs/ca-certificates.crt
+          test "$(curl --noproxy "*" --fail --silent --show-error --max-time 10 https://network.test:8443)" = outbound-network-ok
+          # Verification is not bypassed: the same endpoint by address fails the
+          # name check imposed by the certificate subject alternative name.
+          if curl --noproxy "*" --silent --show-error --max-time 5 https://192.168.1.3:8443 2>/dev/null; then
+            echo "Unexpectedly verified a certificate for the wrong name" >&2
+            exit 1
+          fi
+        '
+      """))
+
+    with subtest("--allowed-egress-udp tunnels one datagram endpoint"):
+      peer.wait_for_unit("network-test-udp-echo.service")
+      machine.succeed(as_alice("""
+        # One datagram out and one back: the flow is bridged and the payload
+        # was not merged with any other. Flows one after another each work. A
+        # datagram flow costs two process forks on a single-CPU guest, the
+        # socat UDP listener can drop a new flow's first datagram while it
+        # hands over to a forked child, so the session is retried.
+        out=""
+        for _ in {1..5}; do
+          out=$(wrap --allowed-egress-udp network.test:19095 bash -euo pipefail -c '
+            printf "p1:"
+            printf probe | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
+            printf " p2:"
+            printf first | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
+            printf " p3:"
+            printf second | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
+          ' 2>&1) || true
+          if [[ "$out" = "p1:probe p2:first p3:second" ]]; then
+            break
+          fi
+          sleep 1
+        done
+        if [[ "$out" != "p1:probe p2:first p3:second" ]]; then
+          echo "Unexpected datagram flows: [$out]" >&2
+          exit 1
+        fi
+        # Allowing UDP is not a licence for TCP, nor for another UDP port.
+        wrap --allowed-egress-udp network.test:19095 bash -euo pipefail -c '
+          if timeout 5 curl --noproxy "*" --fail --silent --show-error http://network.test:8080 2>/dev/null; then
+            echo "Unexpected access to a TCP endpoint" >&2
+            exit 1
+          fi
+          if printf x | timeout 3 socat -t 1 - UDP-CONNECT:network.test:19096 2>/dev/null; then
+            echo "Unexpected access to another UDP port" >&2
+            exit 1
+          fi
+        '
+      """))
+
+    with subtest("--allowed-egress-tcp and --allowed-egress-udp on one host are separate"):
+      machine.succeed(as_alice("""
+        # Both allowances work in one session. Retried like the datagram
+        # test: the UDP half can lose a flow's first datagram to the socat
+        # listener handover on a loaded guest.
+        out=""
+        for _ in {1..5}; do
+          out=$(wrap --allowed-egress-tcp network.test:8080 --allowed-egress-udp network.test:19095 \
+            bash -euo pipefail -c '
+              printf "tcp:"
+              curl --noproxy "*" --fail --silent --show-error --max-time 10 http://network.test:8080
+              printf " udp:"
+              printf both | timeout 15 socat -t 8 - UDP-CONNECT:network.test:19095
+            ' 2>&1) || true
+          if [[ "$out" = "tcp:outbound-network-ok udp:both" ]]; then
+            break
+          fi
+          sleep 1
+        done
+        test "$out" = "tcp:outbound-network-ok udp:both"
+      """))
+
+    with subtest("mkWrap egress exposes the same single endpoint as the CLI flags"):
+      # The generated launcher must carry --allowed-egress-tcp just like a
+      # command line would.
+      machine.succeed(as_alice("""
+        test "$(profile-test-egress -c 'curl --noproxy "*" -fsS --max-time 5 http://network.test:8080/source')" = 192.168.1.1
+        profile-test-egress -euo pipefail -c '
+          grep -q "^192.168.1.3 network.test$" /etc/hosts
+          ! timeout 3 curl --noproxy "*" --fail --silent --max-time 2 http://network.test:8081
+        '
+      """))
+
+    with subtest("--allowed-egress sessions keep the caller's numeric identity"):
+      # The loopback is addressed from a user namespace that maps the caller to
+      # root, just as pasta does for -n; that mapping must not leak into the
+      # sandbox, which would otherwise run everything as root.
+      machine.succeed(as_alice("""
+        export EXPECTED_UID="$(id -u)" EXPECTED_GID="$(id -g)"
+        for flags in '--allowed-egress-tcp network.test:8080' '--allowed-egress-udp network.test:19095'; do
+          wrap $flags -e EXPECTED_UID -e EXPECTED_GID bash -ec '
+            test "$UID" = "$EXPECTED_UID"
+            test "$(id -u)" = "$EXPECTED_UID"
+            test "$(id -g)" = "$EXPECTED_GID"
+          '
+        done
+        test "$(wrap --allowed-egress-tcp network.test:8080 -u whoami)" = alice
+        test "$(wrap --allowed-egress-udp network.test:19095 -u whoami)" = alice
+      """))
+
+    with subtest("--allowed-egress-tcp/udp reject bad endpoints and other network modes, and clean up"):
+      machine.succeed(as_alice("""
+        for spec in 'not a spec' 'network.test:0' 'network.test:65536' 'nosuch.invalid:80' '999.1.1.1:80' '2001:db8::1:443' '127.0.0.1:80'; do
+          if wrap --allowed-egress-tcp "$spec" true; then
+            echo "Unexpected acceptance of endpoint: $spec" >&2
+            exit 1
+          fi
+          if wrap --allowed-egress-udp "$spec" true; then
+            echo "Unexpected acceptance of udp endpoint: $spec" >&2
+            exit 1
+          fi
+        done
+        # -N inherits the caller's namespace; wrap cannot address its loopback.
+        ! wrap -N --allowed-egress-tcp network.test:8080 true
+        ! wrap -N --allowed-egress-udp network.test:19095 true
+        ! wrap -n -N --allowed-egress-tcp network.test:8080 true
+        # The unix sockets are destroyed once the session closes.
+        ! ls /tmp/tmp.*/egress-*.sock
+      """))
+
+    with subtest("With -n the tunnels coexist with pasta's egress"):
+      # The last network flag wins: -n after an endpoint option still selects
+      # pasta, and the tunnel prologue runs inside the namespace pasta made.
+      machine.succeed(as_alice("""
+        # Combining them is permitted but confined by neither: wrap must say
+        # on stderr that the allowlist does not restrict pasta.
+        note="$(wrap -n --allowed-egress-tcp network.test:8080 true 2>&1 >/dev/null)" || {
+          echo "note-wrap failed: [$note]" >&2
+          exit 1
+        }
+        if [[ "$note" != *"does not restrict pasta"* ]]; then
+          echo "Unexpected note: [$note]" >&2
+          exit 1
+        fi
+
+        # The host-resolved answer is in the session, and it is local: the
+        # endpoint is reached through lo, not through wrap0. The session runs
+        # with -v, so a failing launch leaves the real bwrap command line in
+        # the log for inspection.
+        if ! wrap -v --allowed-egress-tcp network.test:8080 -n -P 18080 bash -euo pipefail -c '
+          hosts="$(grep "^192\.168\.1\.3 " /etc/hosts || true)"
+          if [[ "$hosts" != "192.168.1.3 network.test" ]]; then
+            echo "DIAG-Unexpected hosts line in combined mode: [$hosts]"
+            exit 1
+          fi
+          rt1="$("${pkgs.iproute2}/bin/ip" route get 192.168.1.3 2>&1)"
+          if [[ "$rt1" != *" dev lo "* ]]; then
+            echo "DIAG-Unexpected route for the endpoint: [$rt1]"
+            exit 1
+          fi
+          body="$(curl --noproxy "*" --fail --silent --show-error --max-time 5 http://network.test:8080 || true)"
+          if [[ "$body" != outbound-network-ok ]]; then
+            echo "DIAG-Unexpected tunnel body: [$body]"
+            exit 1
+          fi
+          # The egress owned by pasta itself is untouched: DNS forwarded from
+          # the sandbox, the -P host loopback forward, and a route for every
+          # other address. The endpoint address is also the gateway here, so
+          # the local route can leave "dev wrap0" as the last field: match no
+          # further.
+          answer="$(dig +short +time=2 +tries=1 network.test A)"
+          if [[ "$answer" != 192.168.1.3 ]]; then
+            echo "DIAG-Unexpected sandbox answer: [$answer]"
+            exit 1
+          fi
+          echo="$(printf pasta | timeout 3 socat -T 1 - TCP4:127.0.0.1:18080)"
+          if [[ "$echo" != pasta ]]; then
+            echo "DIAG-Unexpected host-port echo: [$echo]"
+            exit 1
+          fi
+          rt2="$("${pkgs.iproute2}/bin/ip" route get 192.0.2.10 2>&1)"
+          if [[ "$rt2" != *" dev wrap0"* ]]; then
+            echo "DIAG-Unexpected route for 192.0.2.10: [$rt2]"
+            exit 1
+          fi
+        ' 2>/tmp/coexist-stderr; then
+          echo "Combined-mode session failed; key lines:" >&2
+          grep -a "DIAG-\|egress-hosts\|/etc/hosts\|egress listeners\|Error" /tmp/coexist-stderr | head -30 >&2
+          exit 1
+        fi
+        rm -f /tmp/coexist-stderr
+      """))
+
     machine.succeed("systemctl stop network-test-host-sockets.service")
 
     # WireGuard models a VPN selected with -I while ordinary LAN access remains
@@ -1451,6 +1738,29 @@ pkgs.testers.nixosTest {
             wrap -I wg1 bash -euo pipefail -c '
               test "$(printf vpn-udp6 | timeout 3 socat -t 1 -T 1 - \
                 UDP6:[fd77::2]:18082)" = vpn-udp6
+            '
+          """))
+
+        with subtest("--allowed-egress tunnels compose alongside -I pasta networking"):
+          # -I steers only pasta's egress; the caller's half of the tunnel
+          # keeps the caller's default path, so the peer sees the LAN address
+          # of a tunnelled request while -I itself is untouched. Inside, the
+          # endpoint is local to the session, proving the answer came through
+          # the tunnel while every other address still leaves through wrap0.
+          machine.succeed(as_alice("""
+            # -4 on purpose: the tunnel carries the IPv4 endpoint, while
+            # pasta's unrestricted egress would otherwise let curl prefer
+            # the endpoint's IPv6 address and bypass the tunnel silently.
+            body="$(wrap -I wg1 --allowed-egress-tcp wg.test:8080 \
+              curl -4 --noproxy "*" -fsS --max-time 5 http://wg.test:8080/source)"
+            if [[ "$body" != 192.168.1.1 ]]; then
+              echo "Unexpected tunnel source next to -I: [$body]" >&2
+              exit 1
+            fi
+            wrap -I wg1 --allowed-egress-tcp wg.test:8080 bash -euo pipefail -c '
+              grep -q "^10.77.0.2 wg.test$" /etc/hosts
+              ${pkgs.iproute2}/bin/ip route get 10.77.0.2 | grep -F " dev lo "
+              ${pkgs.iproute2}/bin/ip route get 192.168.1.3 | grep -F " dev wrap0"
             '
           """))
 

@@ -41,6 +41,23 @@ Run a python script with Pulse Audio and Pipewire access, but not sharing the cu
 wrap -a -p python my-tool.py
 ```
 
+### Imperative single-endpoint egress from an offline sandbox
+
+> You need to run a tool that talks to one known server — for example a coding agent reaching only its model endpoint — but the tool must not be able to reach anything else, not even your own machine.
+
+`--allowed-egress-tcp` and `--allowed-egress-udp` keep the sandbox network-less and tunnel exactly one `domain:port` each to the caller's network:
+
+```shell
+wrap -u --allowed-egress-tcp strata.netpleb.com:443 curl https://strata.netpleb.com
+```
+
+The domain is resolved by the caller before the sandbox starts. Inside the session the name resolves to that address through a generated `/etc/hosts`, the address is assigned to the session's own `lo` interface, and connections to it are relayed through a unix socket in wrap's private directory, which is destroyed when the session closes. Nothing else is reachable: no other address, no other port, and no DNS. It requires neither `-n` nor root, and no firewall rules are installed anywhere; unreachability is structural. (A kernel firewall cannot do this job at the pasta boundary anyway: pasta is a userspace relay, so sandbox traffic only ever exists in the kernel as caller-owned sockets that a host ruleset could not single out.)
+
+An IPv4 address may be given instead of a name (`--allowed-egress-tcp 203.0.113.7:443`), in which case no name is resolved and no `/etc/hosts` is written; the address still becomes local to the session. IPv6 is not supported. UDP datagram boundaries are preserved, so a datagram endpoint works as the application expects; TCP and UDP on the same port are separate allowances.
+
+As with `-n` and `-N`, the caller's certificate authorities are shared into the session, so an HTTPS endpoint verifies normally. The session also runs with the caller's own uid and gid, as `-n` does: `-u` reports your username, and files the session writes are yours.
+
+With `-n` or `-I` the tunnels also work: the endpoint stays host-resolved and reachable through its own path, next to pasta's ordinary, unrestricted egress through `wrap0`. The allowlist then adds ways out; it does not confine pasta (nothing rootless can — see the note on why no firewall is involved above), so a confined session should not ask for `-n`. wrap says so on stderr when the two are combined. `-N` is rejected outright: the session would share the caller's namespace, whose loopback wrap cannot address.
 ### Declarative Opencode
 
 > You want to run your opencode agent with access to the current working directory.
@@ -82,7 +99,7 @@ nix run .
 
 By default, the imperative `wrap` command will:
 
-- ✅ Prevent network access. (Use `-n` to allow.)
+- ✅ Prevent network access. (Use `-n` to allow, or `--allowed-egress-tcp`/`--allowed-egress-udp` for a single endpoint.)
 - ✅ Prevent access to Wayland and X. (Use `-d` (desktop) to allow.)
 - ✅ Prevent camera access. (Use `-c` to allow.)
 - ✅ Prevent audio access. (Use `-a` to allow.)
@@ -119,6 +136,14 @@ By default, the imperative `wrap` command will:
   -w PATH  Mount PATH into sandbox in read write mode.
   -s PATH  Share PATH's Nix runtime closure read-only instead of all of /nix and NIX_PROFILES.
   -H PATH  Use PATH as persistent home storage, mounted writable at the caller's HOME.
+           HOME and explicit -r/-w mount paths stay unchanged inside the sandbox.
+  --allowed-egress-tcp DOMAIN:PORT | ADDRESS:PORT
+           Allow exactly this one TCP endpoint out of the sandbox; repeatable.
+           In the default network-less mode it is the sandbox's only way out;
+           with -n or -I it adds a host-resolved path next to pasta's
+           egress. Alias: --allow. IPv4 only.
+  --allowed-egress-udp DOMAIN:PORT | ADDRESS:PORT
+           Same as --allowed-egress-tcp for one UDP endpoint. Alias: --allow-udp.
   -v       Verbose output for debugging.
 ```
 
@@ -163,6 +188,7 @@ The `lib.mkWrap` function takes the following arguments.
 | `home` | Host backing directory to create if needed and mount writable at the caller's HOME inside the sandbox. The HOME value does not change. Omit to keep the default isolated home. |
 | `shareCwd` | Mount the launch-time working directory writable, subject to wrap's protected-path rules. Defaults to `false`. Startup preserves the cwd if it exists inside the sandbox, otherwise falling back to HOME. |
 | `hostPorts` | Host loopback TCP ports accessible at the same `127.0.0.1` port inside the sandbox. Defaults to `[]`. Requires `capabilities.network = true` and `hostNetwork` disabled. |
+| `egress` | Egress tunnels: lists `tcp` and `udp` of `domain:port` or IPv4 `address:port`, defaulting to empty. Not combinable with `hostNetwork`. See `--allowed-egress-tcp` and `--allowed-egress-udp`. |
 | `closures` | Optional list of additional Nix packages/store paths to share with their runtime closures. Omit or set `null` to share all of `/nix` (default). Any list, including `[]`, enables closure-only sharing and automatically includes `package`; `$NIX_PROFILES` are not auto-mounted. |
 | `mounts.readOnly` | Host paths to mount read-only. Defaults to `[]`. |
 | `mounts.writable` | Host paths to mount writable. Defaults to `[]`. |
