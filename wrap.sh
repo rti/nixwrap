@@ -123,6 +123,7 @@ OPTIONS:
   -N       Keep the caller's network, including loopback and abstract sockets.
   -P PORT  With -n, allow TCP access to this host loopback port; repeatable.
   -I IFACE Allow Network access only through host interface IFACE (implies -n).
+  -A RULE  With -n, allow only tcp:HOST:PORT or udp:HOST:PORT; repeatable.
   -a       Allow Audio access.
   -c       Allow Camera access.
   -B       Allow direct, unfiltered host session D-Bus access.
@@ -231,6 +232,7 @@ home_source=""
 network=0
 host_ports=""
 outbound_interface=""
+network_allow=()
 explicit_mounts=()
 store_roots=()
 store_bin_path=""
@@ -238,7 +240,7 @@ xauth_src=""
 dbus_raw=0
 dbus_rules=()
 
-while getopts "r:w:s:e:H:P:I:b:BacdfhnNpuv" opt; do
+while getopts "r:w:s:e:H:P:I:A:b:BacdfhnNpuv" opt; do
   case "$opt" in
 
   s)
@@ -365,6 +367,10 @@ while getopts "r:w:s:e:H:P:I:b:BacdfhnNpuv" opt; do
       fi
       outbound_interface="$OPTARG"
     fi
+    ;;
+
+  A)
+    network_allow+=("$OPTARG")
     ;;
 
   P)
@@ -625,9 +631,69 @@ elif [[ "$network" == n ]]; then
   pasta_launch+=(--)
 fi
 
+firewall_launch=()
+if (( ${#network_allow[@]} )); then
+  if [[ "$network" != n ]]; then
+    echo "Error: -A requires isolated networking (-n or -I), not -N." >&2
+    exit 1
+  fi
+
+  # Pin names without allowing arbitrary external DNS queries.
+  printf '127.0.0.1 localhost\n::1 localhost\n' >"$TMPDIR/hosts"
+  : >"$TMPDIR/resolv.conf"
+  bwrap_opts+=(--ro-bind "$TMPDIR/hosts" /etc/hosts)
+
+  {
+    cat <<'NFT'
+table inet wrap {
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oifname "lo" accept
+    ip6 daddr { fe80::/10, ff02::/16 } ip6 hoplimit 255 icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+NFT
+    for rule in "${network_allow[@]}"; do
+      if [[ ! "$rule" =~ ^(tcp|udp):(.+):([1-9][0-9]{0,4})$ ]]; then
+        echo "Invalid -A rule: $rule (expected tcp:HOST:PORT or udp:HOST:PORT)" >&2
+        exit 1
+      fi
+      protocol="${BASH_REMATCH[1]}"
+      host="${BASH_REMATCH[2]}"
+      port="${BASH_REMATCH[3]}"
+      if (( port > 65535 )); then
+        echo "Invalid destination port: $port" >&2
+        exit 1
+      fi
+      if [[ "$host" == \[*\] ]]; then
+        host="${host:1:${#host}-2}"
+      fi
+      addresses="$(getent ahosts "$host")" || {
+        echo "Cannot resolve allowed host: $host" >&2
+        exit 1
+      }
+      while IFS=$' \t' read -r address kind _; do
+        # getent repeats each address for STREAM, DGRAM and RAW.
+        [[ "$kind" == STREAM ]] || continue
+        family=ip
+        [[ "$address" != *:* ]] || family=ip6
+        printf '    %s daddr %s %s dport %s accept\n' \
+          "$family" "$address" "$protocol" "$port"
+        printf '%s %s\n' "$address" "$host" >>"$TMPDIR/hosts"
+      done <<<"$addresses"
+    done
+    printf '  }\n}\n'
+  } >"$TMPDIR/network.nft"
+
+  # Configure pasta's netns before bwrap enters its inner user namespace.
+  firewall_launch=("$BASH" -euc '
+    nft -f "$1"
+    shift
+    exec "$@"
+  ' wrap-firewall "$TMPDIR/network.nft")
+fi
+
 # A small supervisor owns the proxy and forwards termination to bubblewrap.
 launch_sandbox() {
-  exec "${pasta_launch[@]}" bwrap \
+  exec "${pasta_launch[@]}" "${firewall_launch[@]}" bwrap \
   --clearenv \
   --dev /dev \
   --proc /proc \
