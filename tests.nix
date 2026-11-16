@@ -12,6 +12,22 @@ let
   # Same command name, different results: -s order must determine command lookup.
   firstCommand = pkgs.writeShellScriptBin "closure-command" "printf first";
   secondCommand = pkgs.writeShellScriptBin "closure-command" "printf second";
+  # Echo each datagram to its sender without retaining a client connection:
+  # successive sandbox invocations use different source ports.
+  udpEcho = pkgs.writeText "udp-echo.py" ''
+    import socket
+    import sys
+
+    ipv6 = sys.argv[1] == "ipv6"
+    family = socket.AF_INET6 if ipv6 else socket.AF_INET
+    with socket.socket(family, socket.SOCK_DGRAM) as server:
+        if ipv6:
+            server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        server.bind(("::" if ipv6 else "0.0.0.0", 18082))
+        while True:
+            payload, sender = server.recvfrom(65535)
+            server.sendto(payload, sender)
+  '';
   # A persistent client keeps the user manager subscribed to broadcast signals.
   dbusPython = pkgs.python3.withPackages (ps: [ ps.dbus-python ]);
   dbusCaller = mkWrap {
@@ -141,8 +157,13 @@ pkgs.testers.nixosTest {
         address = "192.168.1.3";
         prefixLength = 24;
       }
+      # A second reachable destination makes denied-host probes meaningful.
+      {
+        address = "192.168.1.4";
+        prefixLength = 24;
+      }
     ];
-    networking.firewall.allowedTCPPorts = [ 8080 ];
+    networking.firewall.allowedTCPPorts = [ 8080 18082 ];
     services.dnsmasq = {
       enable = true;
       resolveLocalQueries = false;
@@ -161,11 +182,17 @@ pkgs.testers.nixosTest {
     # Echo payloads on both address families to exercise UDP independently of TCP.
     systemd.services.network-test-udp = {
       wantedBy = [ "multi-user.target" ];
-      serviceConfig.ExecStart = "${pkgs.socat}/bin/socat UDP4-RECVFROM:18082,fork EXEC:${pkgs.coreutils}/bin/cat";
+      serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${udpEcho} ipv4";
+    };
+    # TCP and UDP share a port so tests can distinguish protocol restrictions
+    # from a missing listener or a closed destination port.
+    systemd.services.network-test-tcp = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig.ExecStart = "${pkgs.socat}/bin/socat TCP4-LISTEN:18082,reuseaddr,fork EXEC:${pkgs.coreutils}/bin/cat";
     };
     systemd.services.network-test-udp6 = {
       wantedBy = [ "multi-user.target" ];
-      serviceConfig.ExecStart = "${pkgs.socat}/bin/socat UDP6-RECVFROM:18082,ipv6only=1,fork EXEC:${pkgs.coreutils}/bin/cat";
+      serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${udpEcho} ipv6";
     };
     services.nginx = {
       enable = true;
@@ -1329,6 +1356,113 @@ pkgs.testers.nixosTest {
         ! wrap -N -P 18080 true
       """))
 
+    # All denied endpoints below first respond without an allowlist. A timeout
+    # is evidence of filtering only when the same endpoint is known to work.
+    with subtest("-A allows a pinned hostname but denies other hosts, ports and DNS"):
+      peer.wait_for_unit("network-test-tcp.service")
+      peer.wait_for_unit("network-test-udp.service")
+      machine.succeed(as_alice("""
+        wrap -n bash -euo pipefail -c '
+          test "$(curl --noproxy "*" -fsS --max-time 3 http://192.168.1.4:8080)" = outbound-network-ok
+          test "$(printf control | timeout 3 socat -t 1 -T 1 - TCP4:192.168.1.3:18082)" = control
+          test "$(dig +short +time=1 +tries=1 @169.254.1.1 network.test A)" = 192.168.1.3
+        '
+
+        wrap -n -A tcp:network.test:8080 bash -euo pipefail -c '
+          # curl uses the pinned system-resolver mapping, not external DNS.
+          test "$(curl --noproxy "*" -fsS --max-time 3 http://network.test:8080)" = outbound-network-ok
+          if curl --noproxy "*" -fsS --max-time 2 http://192.168.1.4:8080; then
+            echo "Allowlist leaked access to another destination host" >&2
+            exit 1
+          fi
+          if timeout 2 socat -T 1 - TCP4:192.168.1.3:18082 </dev/null; then
+            echo "Allowlist leaked access to another destination port" >&2
+            exit 1
+          fi
+          # Query the forwarding address directly: replacing resolv.conf alone
+          # must not be enough to bypass the DNS restriction.
+          if dig +short +time=1 +tries=1 @169.254.1.1 network.test A; then
+            echo "Allowlist leaked arbitrary DNS access" >&2
+            exit 1
+          fi
+        '
+      """))
+
+    with subtest("-A distinguishes TCP from UDP on the same destination port"):
+      machine.succeed(as_alice("""
+        wrap -n bash -euo pipefail -c '
+          test "$(printf control | timeout 3 socat -t 1 -T 1 - UDP4:192.168.1.3:18082)" = control
+        '
+        wrap -n -A tcp:192.168.1.3:18082 bash -euo pipefail -c '
+          test "$(printf tcp | timeout 3 socat -t 1 -T 1 - TCP4:192.168.1.3:18082)" = tcp
+          reply="$(printf denied | timeout 2 socat -t 1 -T 1 - UDP4:192.168.1.3:18082 || true)"
+          test -z "$reply"
+        '
+        wrap -n -A udp:192.168.1.3:18082 bash -euo pipefail -c '
+          test "$(printf udp | timeout 3 socat -t 1 -T 1 - UDP4:192.168.1.3:18082)" = udp
+          if timeout 2 socat -T 1 - TCP4:192.168.1.3:18082 </dev/null; then
+            echo "UDP permission also allowed TCP" >&2
+            exit 1
+          fi
+        '
+      """))
+
+    with subtest("Repeated -A rules compose with explicit -P host access"):
+      machine.succeed(as_alice("""
+        wrap -n -P 18080 -A tcp:network.test:8080 -A udp:192.168.1.3:18082 \
+          bash -euo pipefail -c '
+            test "$(curl --noproxy "*" -fsS --max-time 3 http://network.test:8080)" = outbound-network-ok
+            test "$(printf udp | timeout 3 socat -t 1 -T 1 - UDP4:192.168.1.3:18082)" = udp
+            test "$(printf host | timeout 3 socat -t 1 -T 1 - TCP4:127.0.0.1:18080)" = host
+            if timeout 2 socat -T 1 - TCP4:127.0.0.1:18083 </dev/null; then
+              echo "Allowlist exposed a host port not granted by -P" >&2
+              exit 1
+            fi
+          '
+      """))
+
+    with subtest("Applications cannot remove the enclosing network firewall"):
+      machine.succeed(as_alice("""
+        wrap -n -A tcp:network.test:8080 bash -euo pipefail -c '
+          if ${pkgs.nftables}/bin/nft flush ruleset; then
+            echo "Application removed its firewall" >&2
+            exit 1
+          fi
+          # A new user namespace must not grant authority over the existing
+          # network namespace either.
+          if ${pkgs.util-linux}/bin/unshare -Ur ${pkgs.nftables}/bin/nft flush ruleset; then
+            echo "Nested user namespace removed the firewall" >&2
+            exit 1
+          fi
+          test "$(curl --noproxy "*" -fsS --max-time 3 http://network.test:8080)" = outbound-network-ok
+          if curl --noproxy "*" -fsS --max-time 2 http://192.168.1.4:8080; then
+            echo "Forbidden destination became reachable after tampering" >&2
+            exit 1
+          fi
+        '
+      """))
+
+    with subtest("-A rejects invalid policy before starting the application"):
+      machine.succeed(as_alice("""
+        work="$(mktemp -d)"
+        trap 'rm -rf "$work"' EXIT
+        for rule in tcp:network.test:0 tcp:network.test:65536 \
+          tcp:network.test:-1 icmp:network.test:80 tcp::80 tcp:missing.invalid:80; do
+          if wrap -w "$work" -n -A "$rule" touch "$work/ran"; then
+            echo "Invalid allowlist rule accepted: $rule" >&2
+            exit 1
+          fi
+          test ! -e "$work/ran"
+        done
+        for mode in "" -N; do
+          if wrap -w "$work" $mode -A tcp:network.test:8080 touch "$work/ran"; then
+            echo "Allowlist accepted without isolated networking" >&2
+            exit 1
+          fi
+          test ! -e "$work/ran"
+        done
+      """))
+
     machine.succeed("systemctl stop network-test-host-sockets.service")
 
     # WireGuard models a VPN selected with -I while ordinary LAN access remains
@@ -1451,6 +1585,29 @@ pkgs.testers.nixosTest {
             wrap -I wg1 bash -euo pipefail -c '
               test "$(printf vpn-udp6 | timeout 3 socat -t 1 -T 1 - \
                 UDP6:[fd77::2]:18082)" = vpn-udp6
+            '
+          """))
+
+        with subtest("-A preserves interface binding and enforces IPv6 destinations"):
+          machine.succeed(as_alice("""
+            # Both IPv6 destinations work before the allowlist is installed.
+            test "$(wrap -I wg1 curl --noproxy "*" -g -6 -fsS --max-time 3 \
+              http://[fd77::2]:8080/source)" = fd77::1
+            test "$(wrap -n curl --noproxy "*" -g -6 -fsS --max-time 3 \
+              http://[2001:db8:1::3]:8080)" = outbound-network-ok
+
+            wrap -I wg1 -A 'tcp:[fd77::2]:8080' -A 'udp:[fd77::2]:18082' \
+              bash -euo pipefail -c '
+                test "$(curl --noproxy "*" -g -6 -fsS --max-time 3 \
+                  http://[fd77::2]:8080/source)" = fd77::1
+                test "$(printf ipv6 | timeout 3 socat -t 1 -T 1 - UDP6:[fd77::2]:18082)" = ipv6
+              '
+            # Use ordinary -n so failure cannot be explained by VPN routing.
+            wrap -n -A 'tcp:[fd77::2]:8080' bash -euo pipefail -c '
+              if curl --noproxy "*" -g -6 -fsS --max-time 2 http://[2001:db8:1::3]:8080; then
+                echo "IPv6 destination escaped the allowlist" >&2
+                exit 1
+              fi
             '
           """))
 

@@ -25,6 +25,8 @@ stdenvNoCC.mkDerivation {
             pkgs.passt
             pkgs.nix
             pkgs.iproute2
+            pkgs.nftables
+            pkgs.glibc.bin # getent resolves allowed destination hosts before sandbox startup.
             pkgs.xdg-dbus-proxy
           ]
         }
